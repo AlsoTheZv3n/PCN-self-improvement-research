@@ -1,0 +1,48 @@
+[project]
+name = "pcn-from-scratch"
+version = "0.1.0"
+description = "From-scratch Predictive Coding Network (State Optimization) on MNIST, with an optional Phase-3 CUDA settling kernel."
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "numpy>=1.24",
+]
+
+# Optional groups — install only when you reach the corresponding phase.
+#   uv sync --extra experiments   (Phase-4 search loop + bio-regime experiments)
+#   uv sync --extra dev           (tests, notebooks, plotting)
+[project.optional-dependencies]
+experiments = [
+    "avalanche-lib>=0.5",   # continual-learning benchmarks (Split/Permuted-MNIST) — docs/10
+    "optuna>=3.6",          # Bayesian optimization for the search loop — docs/04
+    "wandb>=0.17",          # experiment logging
+]
+dev = [
+    "pytest>=8.0",
+    "jupyter>=1.0",
+    "matplotlib>=3.8",
+    "ninja>=1.11",   # required by torch.utils.cpp_extension to build the M6 CUDA kernel
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pcn"]
+
+# This project targets a CUDA GPU (dev machine: RTX 3080 Ti) for the M4 experiment sweeps and
+# the optional M6 CUDA kernel. torch/torchvision are pulled from the PyTorch CUDA index so
+# `uv sync`/`uv run` keep the GPU build instead of reverting to the CPU wheel. We pin cu126 to
+# MATCH the locally installed CUDA toolkit (nvcc 12.6) — required so torch.utils.cpp_extension
+# can compile the M6 kernel (a cu130 torch + nvcc-12.x is a major-version mismatch and fails).
+# CPU-only machine? Remove the two [tool.uv.sources] pins below (then plain CPU wheels install).
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }

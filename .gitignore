@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# uv / venv  (uv.lock IS tracked — reproducibility)
+.venv/
+
+# data & artifacts
+data/
+results/
+*.pt
+*.ckpt
+wandb/
+runs/
+
+# build
+build/
+dist/
+*.so
+*.pyd
+
+# editors / OS / Claude session data
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
