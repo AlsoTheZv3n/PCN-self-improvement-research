@@ -1,0 +1,44 @@
+\chapter{Method and Implementation}\label{ch:method}
+
+\section{From-Scratch PCN Architecture and Interface}
+% Planned content: pure-PyTorch tensor ops, every update under @torch.no_grad; the modules
+% (model.py, settling.py, learning.py, evaluate.py); the train_and_eval(config) contract as
+% the single abstraction. Sources: docs/01, docs/02, CLAUDE.md code-map.
+
+\section{Correctness: Hand-Derived Gradients vs.\ Autograd}
+% Planned content: the settling-state gradient and the Hebbian weight update are checked
+% against torch.autograd to ~1e-5 (autograd used only as an external oracle in tests); the
+% convergence tolerance making "settling-steps-to-converge" measurable.
+
+\section{The Fused CUDA Settling Kernel}\label{sec:kernel}
+% Planned content: motivation (per-step launch overhead); v1 one block per sample; v2 one
+% block per TB-sample tile (weight reuse); v3 cached phi(input) tile; the general-depth variant
+% (pointer arrays + dynamic shared-mem offsets, arbitrary L); activations tanh/identity/sigmoid;
+% the batch-size dispatch; correctness ~1e-6 in a stable regime. The real .cu is the source of
+% truth (settling_kernel.cu), compiled via load(). Sources: docs/07, docs/09, docs/12 §4d/§4h.
+
+\section{The Fair-Comparison Protocol}\label{sec:protocol}
+% Planned content: BPMLPRef clones the PCN init + reuses the identical forward fn (only the
+% learning rule differs); matched loss (BP-MSE-to-one-hot alongside BP-CE); per-method LR
+% selected on a validation split, reported on test; bootstrap CIs over >=3 seeds; PC's eta_x
+% and eta_w tuned jointly (stability frontier). Sources: docs/10 §3, docs/12 §4c.
+
+\section{Continual-Learning Setups}
+% Planned content: domain-IL (Permuted-MNIST, fixed 10-head); class-IL (Split-MNIST/
+% FashionMNIST, shared K-head); the GEM R-matrix and ACC/BWT/learn-acc; the Song-exact
+% alternating protocol (minibatch-level swap, batch 32, budget as an axis). Sources: docs/12
+% §4c/§4g, continual.py.
+
+\section{Generative PC}
+% Planned content: orientation flip to [10,h,h,784] (label->image); masked/input-free settling
+% for generation and inpainting; residual energy at the predicted label as the anomaly score;
+% the ~1/sqrt(output-dim) state-LR scaling for stability. Sources: docs/12 §4f, generative.py.
+
+\section{Optional Extensions: Incremental PC and EWC}
+% Planned content: iPC (update weights every settling step; the _ipc_step simultaneous update;
+% the ~lr/T sensitivity); EWC baseline (diagonal Fisher + quadratic anchor on the BP arm).
+% Sources: docs/12 §4h, learning.py, continual.py.
+
+\section{Reproducibility and Tooling}
+% Planned content: uv-only environment (cu126 pin), the 40-test offline suite, the autonomous
+% hyperparameter search as a thin layer over train_and_eval, the figure pipeline.

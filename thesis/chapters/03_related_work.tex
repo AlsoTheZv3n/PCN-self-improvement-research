@@ -1,0 +1,26 @@
+\chapter{Related Work}\label{ch:related}
+
+\section{Predictive Coding Implementations and Libraries}
+% Planned content: survey PCX/JPC (JAX), ngc-learn, PRECO/survey, Torch2PC, pypc, ePC
+% (PyTorch-autograd) — establish that NONE ship a hand-written inference kernel (docs/15
+% audit: 11 libraries, 0 .cu files). This grounds Hook A's novelty.
+
+\section{Equilibrium Propagation: The Closest Algorithmic Relative}
+% Planned content: EP (Scellier & Bengio 2017; Laborieux et al.; Ernoult et al.) and recent
+% variants; the audit showing EP settling runs via autograd/JAX/host-loop or analog hardware,
+% never a fused CUDA settling kernel (docs/15). Bounds the "first for PC" claim from the EP side.
+
+\section{Systems for Iterative / Fixed-Point Inference}
+% Planned content: persistent RNNs (Diamos et al.; cuDNN PERSIST), LLM megakernels (Mirage,
+% FlashFormer), DEQ (Bai et al.); the persistent/states-resident/single-launch technique is
+% PRIOR ART — our contribution is its transfer to PC, not the technique. The "framework tax"
+% of many small ops as a generic, not-claimed-here observation.
+
+\section{Continual Learning}
+% Planned content: catastrophic forgetting; GEM metrics (Lopez-Paz & Ranzato 2017); EWC
+% (Kirkpatrick et al. 2017); replay; the stability-plasticity trade-off — needed to interpret
+% the "PC forgets less" claim and to position the EWC baseline.
+
+\section{Positioning of This Work}
+% Planned content: a one-paragraph synthesis — where this thesis sits (reproduction + three
+% focused, verified contributions), and what is explicitly NOT claimed.

@@ -1,0 +1,31 @@
+\chapter{Background}\label{ch:background}
+
+\section{Notation and the MLP Baseline}
+% Planned content: layer sizes, activations, the feedforward MLP and BP as the reference;
+% notation used throughout (states s_k, weights W_i, errors eps_k, activation phi).
+
+\section{Predictive Coding: The Energy Formulation}
+% Planned content: Rao & Ballard hierarchical PC; the free-energy / precision-weighted
+% prediction-error energy E = 1/2 sum ||eps_k||^2; isotropic precision (Pi=I) as the modern
+% default. Sources: docs/01, docs/10, docs/11.
+
+\section{State-Optimization PC: Settling and the Local Update}\label{sec:so-pc}
+% Planned content: THE exact algorithm (docs/09). Feedforward indexing (layer i predicts i+1):
+% pred_{i+1}=W_i phi(s_i)+b_i. Inference (settling): s_k <- s_k - lambda(eps_k -
+% phi'(s_k) (.) (W_k^T eps_{k+1})). Local Hebbian weight update at equilibrium:
+% dW_i ∝ eps_{i+1} phi(s_i)^T. Clamping conventions (input always; output in training).
+% This is the math the kernel fuses and the tests verify.
+
+\section{Relation to Backpropagation}
+% Planned content: PC approximates BP under the fixed-prediction assumption (Whittington &
+% Bogacz 2017; Millidge, Tschantz & Buckley 2022); "prospective configuration" is the
+% equilibrium of standard energy-based PC, not a separate algorithm (Song et al. 2024).
+
+\section{When Does PC Equal BP?}
+% Planned content: the restricted regimes where convergence to BP is provable (linear residual
+% nets, width >> depth, equilibrated activities; Innocenti, Achour & Bogacz 2026); the open
+% question of *when* PC does something genuinely different — the framing for the RQ1 study.
+
+\section{Generative versus Discriminative PC}
+% Planned content: orientation matters — a discriminative net (image->label) cannot generate;
+% a generative net (label->image) can. Sets up the Chapter 5 capability result.

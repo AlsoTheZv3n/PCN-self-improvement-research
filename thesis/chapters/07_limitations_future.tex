@@ -1,0 +1,15 @@
+\chapter{Limitations and Future Work}\label{ch:limitations}
+
+\section{Limitations}
+% Planned content (honest, from docs/05 §5 updated): MNIST/FashionMNIST scale; the null does
+% not globally refute Song (scale + seed budget differ even in the exact replication); the
+% kernel's large-batch tiled path is still depth-2 (per-sample path is general-depth); the
+% "first for PC" claim carries the usual "to our knowledge" caveat (bounded by the PC + EP
+% audit); generative output is class prototypes, not diverse samples; uniform noise is an easy
+% OOD; precision schedules reserved; iPC is LR-sensitive.
+
+\section{Future Work}
+% Planned content: depth-scaling and the signal-decay problem (ePC); scale toward larger
+% datasets/Transformers; an Equilibrium-Propagation comparison arm; harder near-OOD anomaly
+% (FashionMNIST vs MNIST, rotations); a diverse generative latent (VAE-like); an AOT kernel
+% build + a register-blocked tiled GEMM for the large-batch deep regime; Nsight Compute report.

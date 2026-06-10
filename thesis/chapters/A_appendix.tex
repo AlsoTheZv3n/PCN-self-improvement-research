@@ -1,0 +1,18 @@
+\chapter{Appendix}\label{ch:appendix}
+
+\section{Exact Settling and Weight-Update Derivation}\label{app:derivation}
+% Planned content: full derivation of grad_sk = eps_k - phi'(s_k)(.)(W_k^T eps_{k+1}) and the
+% Hebbian dW from the energy E; the autograd equivalence used in the tests. Source: docs/09.
+
+\section{Kernel Implementation Details}\label{app:kernel}
+% Planned content: shared-memory layout (v1/v2/v3 + general-depth offset computation), the
+% int64 pointer-array convention, the dispatch thresholds; a listing of the key device
+% functions. Source: settling_kernel.cu, docs/07.
+
+\section{Additional Results}\label{app:results}
+% Planned content: full per-seed tables (PC-vs-BP arms, the n=10 budget sweep), the kernel
+% benchmark + launch-count tables, the LR-tuning scans. Source: results/*.json.
+
+\section{Reproducibility}\label{app:repro}
+% Planned content: environment (uv, cu126), exact commands to reproduce each figure/table, the
+% 40-test inventory, the public repository and commit hashes. Source: README.md, CLAUDE.md.

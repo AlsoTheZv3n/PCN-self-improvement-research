@@ -1,0 +1,28 @@
+\chapter{Discussion}\label{ch:discussion}
+
+\section{Are Predictive Coding's Advantages Real?}
+% Planned content: synthesize RQ1 — under matched-loss, fairly tuned, CI'd comparison PC=~BP;
+% the headline advantages are fragile to confounds; why the literature disagrees (naive
+% comparisons trip exactly these confounds).
+
+\section{The Confound Checklist as a Transferable Contribution}
+% Planned content: the three-item checklist (loss, plasticity, baseline tuning) generalizes
+% beyond PC to any "biologically-plausible vs BP" comparison; reusable for reviewers.
+
+\section{The Systems Insight: Launch Overhead and the GEMM Trade-off}
+% Planned content: PC inference is launch-bound at small batch (a fixable framework tax); the
+% fused-resident kernel and a register-blocked GEMM are architecturally opposed, bounding the
+% large-batch regime; why this matters for PC's natural online/small-batch setting.
+
+\section{What a Generative PC Buys}
+% Planned content: the orientation result — "one mechanism, many tasks" is real only for a
+% generatively trained PC; interpretation and caveats (prototypes, not diverse samples).
+
+\section{Methodology: Adversarial Verification}
+% Planned content: the three-lens review that caught a literature-framing error before it
+% reached the writeup; argue this as a lightweight, reusable safeguard for an empirically
+% confounded subfield. (Reflective, honest.)
+
+\section{Threats to Validity}
+% Planned content: internal (seed counts, single GPU, LR grids), external (scale, two-to-five
+% layers), construct (metrics chosen); how each was mitigated.

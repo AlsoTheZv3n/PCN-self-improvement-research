@@ -1,0 +1,38 @@
+\chapter{Experiments and Results}\label{ch:experiments}
+
+\section{Experimental Setup}
+% Planned content: hardware (RTX 3080 Ti, torch cu126), datasets (MNIST/FashionMNIST),
+% metrics (test accuracy, energy, settling steps, GEM ACC/BWT/learn-acc, AUC, ms/step,
+% launch count), seeds + bootstrap CIs, the artifact JSONs under results/.
+
+\section{The Fused CUDA Settling Kernel}\label{sec:exp-kernel}
+% Planned content: launch-overhead (PyTorch ~0.5 ms/step batch-independent; 31 launches/step
+% vs 1; Fig 4); speedup 3.2x@64, ~2x@256, break-even ~1024, cuBLAS@>=2048 (Fig 1); the
+% architectural GEMM trade-off; arbitrary-depth validation (16 configs, ~1e-6); in-study
+% integration 1.45x end-to-end, per-seed identical. Sources: docs/12 §4d/§4h, Fig 1+4.
+
+\section{Fair PC versus BP}\label{sec:exp-pcbp}
+% Planned content: bulk accuracy (PC=~BP-MSE, CIs overlap; loss effect +5.9pp; Fig 2 left);
+% noise robustness (Fig 2 right); sample efficiency; domain-IL; class-IL. The THREE CONFOUNDS:
+% (1) loss function, (2) plasticity (read forgetting vs learn-acc + retained task-0), (3)
+% untuned baseline. Sources: docs/12 §4c, docs/10 §9, Fig 2.
+
+\section{Architecture-Faithful Replication of Song's Exact Protocol}\label{sec:exp-song}
+% Planned content: the minibatch-alternating Split-FashionMNIST setup; the framing correction
+% (Fig 4e = interference, per-method LR, NOT LR-robustness) via the adversarial three-lens
+% review; budget as an axis (84 untrainable -> convergence); n=10, no >=1sigma gap at any
+% budget; directional PC mid/converged edge within noise. Sources: docs/12 §4g/§4h, Fig 3.
+
+\section{Generative Predictive Coding}\label{sec:exp-gen}
+% Planned content: discriminative PC produces noise; generative PC yields per-class digit
+% prototypes, inpaints occluded halves, and separates uniform-noise OOD with anomaly AUC 1.0
+% (in-dist energy 5.1 vs 94.5). Figures: results/m5v2_*.png. Source: docs/12 §4f.
+
+\section{Optional Extensions: iPC and EWC}\label{sec:exp-depth}
+% Planned content: iPC lr-sensitivity + 74.3% vs 63.1% at the matched-effective rate; EWC
+% forgets less (BWT -41.1% vs -45.7%, final 65.7% vs 62.0%) as a positive control.
+% Source: docs/12 §4h.
+
+\section{Autonomous Hyperparameter Search}\label{sec:exp-search}
+% Planned content: bounded random search over (T, eta_x, eta_w) rediscovers the eta_x<->eta_w
+% interaction — an internal consistency check. Source: docs/04, docs/12, m7_search.json.

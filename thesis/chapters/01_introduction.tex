@@ -1,0 +1,28 @@
+\chapter{Introduction}\label{ch:intro}
+
+\section{Motivation}
+% Planned content: biological implausibility of backpropagation (weight transport, global
+% backward pass, update locking); the free-energy principle and cortical prediction-error
+% accounts; predictive coding as a local, energy-based alternative; the inconsistency of
+% reported PC advantages as the entry point. Sources: docs/00, docs/06, docs/10.
+
+\section{Problem Statement and Research Questions}
+% Planned content: RQ1 — under a fair, confound-controlled comparison, does PC actually beat
+% BP on MNIST-scale tasks? RQ2 — what dominates PC's inference cost on GPU and can it be
+% reduced? RQ3 — can a from-scratch PC act as a single mechanism for classification AND
+% generation? State each RQ explicitly; they map to contributions (B), (A), (C).
+
+\section{Contributions}
+% Planned content: (A) first hand-written fused CUDA settling kernel for PC + launch-overhead
+% characterization + arbitrary depth + in-study integration; (B) confound-controlled fair
+% PC-vs-BP protocol, the PC=~BP verdict, the three-confound checklist, the Song-exact
+% replication, and the adversarial-verification methodology; (C) a working generative PC;
+% plus incremental PC and an EWC baseline. Reproducible release (code, tests, figures).
+
+\section{Scope and Non-Goals}
+% Planned content: MNIST/FashionMNIST scale, vanilla SO-PC, two-to-five layers; explicitly
+% NOT a Transformer-scale or SOTA claim. The honest framing: understanding + clean reproduction
+% + focused, defensible insights (docs/05 novelty framing).
+
+\section{Outline of the Thesis}
+% Planned content: one-paragraph roadmap of Chapters 2-8 and the appendix.
