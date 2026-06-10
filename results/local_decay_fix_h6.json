@@ -1,0 +1,54 @@
+{
+  "arch": [
+    784,
+    64,
+    64,
+    64,
+    64,
+    64,
+    64,
+    10
+  ],
+  "T": 20,
+  "bp_acc": 0.6512,
+  "baseline_so": 0.2264,
+  "rows": [
+    {
+      "fix": "SO baseline",
+      "gamma": 1.0,
+      "errnorm": false,
+      "pc_acc": 0.2264
+    },
+    {
+      "fix": "precision gamma=1.5",
+      "gamma": 1.5,
+      "errnorm": false,
+      "pc_acc": 0.5379
+    },
+    {
+      "fix": "precision gamma=2.0",
+      "gamma": 2.0,
+      "errnorm": false,
+      "pc_acc": 0.101
+    },
+    {
+      "fix": "precision gamma=3.0",
+      "gamma": 3.0,
+      "errnorm": false,
+      "pc_acc": 0.101
+    },
+    {
+      "fix": "errnorm",
+      "gamma": 1.0,
+      "errnorm": true,
+      "pc_acc": 0.0958
+    }
+  ],
+  "best": {
+    "fix": "precision gamma=1.5",
+    "gamma": 1.5,
+    "errnorm": false,
+    "pc_acc": 0.5379
+  },
+  "gap_recovered": 0.7332862523523229
+}

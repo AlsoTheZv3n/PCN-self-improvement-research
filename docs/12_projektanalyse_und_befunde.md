@@ -590,6 +590,51 @@ PC-Vorteil gegenüber fair getuntem BP" (`results/m4_alternating_song_exact_budg
 
 ---
 
+## 4i. Tiefe, Signal-Decay und die ehrlichen Grenzen der Innovations-Versuche (2026-06-10)
+
+Nach dem Gesamt-Verdikt „PC ≈ BP" haben wir gezielt nach einem *eigenen, neuen* Befund gesucht —
+drei Wetten, mit billigen Kill-Gates und Literatur-Check vor jeder Neuheits-Behauptung. **Alle drei
+endeten als saubere Negative**, aus prinzipiellen Gründen. Das ist selbst ein ehrlicher Befund, und
+die dabei gebaute Apparatur + Reproduktionen sind gutes Material (`scripts/equilibrium_divergence.py`,
+`signal_decay.py`, `local_decay_fix.py`).
+
+**Wette 1 — „Equilibrium-PC weicht von BP ab" → widerlegt.** Hypothese: PC und BP finden bei
+Accuracy-Parität *unterschiedliche* Lösungen, und Unter-Settling versteckt das. Gemessen (gleiche
+Init, MNIST, T von 5→160 via tol-Settling): **das Gegenteil.** Je näher PC am Gleichgewicht, desto
+*ähnlicher* wird seine Lösung der von BP — Gewichts-Distanz ↓ und Vorhersage-Übereinstimmung ↑
+Richtung BP-vs-BP-Boden (T=160: 84 % Übereinstimmung vs. 90 % Boden). Unter-Settling lässt PC
+abweichen, aber nur indem es *schlechter* wird. Theorie-konform (PC→BP im Equilibrium), kein neuer
+Vorteil.
+
+**Wette 2 — „fused Kernel für schnelles+stabiles tiefes PC (EO)" → keine Nische.** EO/ePC behebt den
+Tiefen-Decay, indem es **globalen Backprop** zum Fehler-Transport nutzt — und Backprop ist auf GPU
+bereits cuBLAS-effizient. Ein fused Kernel für EO hätte keine Value-Prop (kein Iterations-/Launch-
+Overhead-Problem). docs/09 §3 hatte das vorweggenommen: die Kernel-Nische ist **SO** (lokal-parallel)
+— aber SO zerfällt bei Tiefe. Prinzipielle Wand: „schnell+stabil+tief+lokal" gibt es nicht zugleich.
+
+**Wette 3 — „lokaler (Nicht-Backprop) Decay-Fix" → reproduziert, aber bekannt.** Wir haben erst den
+**Signal-Decay sauber reproduziert** (`signal_decay.py`, MNIST, Breite 64): Standard-SO-PC ist flach
+gleichauf mit BP (1 Hidden: 68 vs 67 %), **kollabiert aber mit Tiefe** (4 Hidden: 38 vs 66 %; 8
+Hidden: **18 vs 64 %**), und das Per-Layer-Lern-Signal ‖dW‖ zerfällt exponentiell Richtung Eingang
+(**Ratio Output/Input 669×** bei 8 Hidden) — genau die `(1−λ)^{t−i}`-Signatur (Goemaere/Qi). Dann ein
+**lokaler Präzisions-Schedule** Π_k = γ^(n−k) (Eingangs-nahe Layer höhere Präzision):
+*funktioniert mechanistisch* — flacht das Signal-Profil 10–30× ab (630× → 22–61×) und holt die
+Decay-Lücke robust zurück (über 3 Seeds): **Tiefe 4: 62 % (γ=1,5), Tiefe 6: 56 %, Tiefe 8: 38 %
+(γ=1,35)**; das optimale γ sinkt mit der Tiefe (γ^Tiefe kompoundiert → Stabilität-vs-Kompensation-
+Tradeoff). **Aber Literatur-Check:** genau das — *layer-/tiefen-abhängige Präzisions-Schedules*
+gegen den PC-Decay — ist publiziert (**Qi et al. 2025, arXiv:2506.23800; μPC, arXiv:2505.13124**),
+und dort *besser* (BP-äquivalent bei Tiefe >7). Wir haben eine **bekannte Technik gröber reproduziert**,
+keine Neuheit.
+
+**Bilanz (ehrlich, evidenzbasiert):** Drei rigorose Anläufe, drei Negative. Genuine PC-Neuheit ist
+auf MNIST-Skala mit From-Scratch-Mitteln **nicht erreichbar** — die starken Gruppen (Bogacz,
+Salvatori, Goemaere, Qi) haben den erreichbaren Boden abgedeckt. Der Wert dieses Projekts ist die
+**Disziplin** (verifizierte From-Scratch-Implementierung, Kernel-Artefakt, confound-kontrollierte
+Studie, ehrliche Null- und Reproduktions-Befunde inkl. dieser Tiefen-Ablation), nicht eine neue
+Fähigkeit. Die Tiefen-Ablation hier ist sauberes Limitations-/Kontext-Material für die Thesis.
+
+---
+
 ## 5. Verweis
 
 Der konkrete, geordnete Umsetzungsplan (mit verifizierten Quellen und Schritt-für-Schritt-
