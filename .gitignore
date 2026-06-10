@@ -29,7 +29,7 @@ dist/
 .DS_Store
 Thumbs.db
 
-# LaTeX build intermediates (thesis/ source is tracked; PDF is regenerable via tectonic)
+# LaTeX build intermediates (kept local everywhere)
 *.aux
 *.bbl
 *.blg
@@ -41,9 +41,9 @@ Thumbs.db
 *.fls
 *.fdb_latexmk
 *.synctex.gz
-thesis/main.pdf
 
-# thesis LaTeX source kept local; the repo ships only the compiled final PDF
-thesis/chapters/
-thesis/frontmatter/
-thesis/main.tex
+# thesis: the repo ships ONLY the compiled final PDF. All LaTeX source + build (chapters,
+# frontmatter, main.tex, references.bib, README, intermediates) stays local and in git history;
+# visitors see the finished PDF, not how it was built.
+thesis/*
+!thesis/Weidenmann_Predictive-Coding-from-Scratch.pdf

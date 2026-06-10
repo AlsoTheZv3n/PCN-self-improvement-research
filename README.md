@@ -21,7 +21,7 @@ uv sync --extra dev && uv run pytest -q      # Settling-Korrektheit (offline, sy
   Tiefen-Ablation, generativ, Suche) + `make_figures.py`
 - `docs/` — vollständige Projekt-Doku (`00_overview.md` Einstieg; exakter Algorithmus `09`,
   Methodik `10`, Quellen `11`, alle Befunde `12`)
-- `thesis/` — **Masterarbeit-Niveau-LaTeX** (EN), kompiliert via `tectonic main.tex`
+- `thesis/` — die fertige **Masterarbeit als PDF** (`Weidenmann_Predictive-Coding-from-Scratch.pdf`)
 - `figures/` — die Paper-Figuren (PNG + PDF), reproduzierbar aus `results/*.json`
 - `CLAUDE.md` — Arbeitsanweisungen, Konventionen und Lese-Reihenfolge für Claude Code
 
