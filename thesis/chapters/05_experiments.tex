@@ -589,6 +589,69 @@ re-derives a manually found coupling is a small but reassuring validation that t
 hyperparameter landscape was characterised correctly, and that the \texttt{train\_and\_eval}
 contract is sound.
 
+\section{Depth, Signal Decay, and a Local Precision Mitigation}\label{sec:exp-decay}
+
+The parity results above use shallow networks. Predictive coding is known to degrade with depth, and
+we close the experimental chapter by reproducing this phenomenon at our scale and probing one local
+mitigation --- both to characterise where vanilla SO-PC breaks and to be explicit that the remedy is
+\emph{not} novel.
+
+\begin{figure}[t]\centering
+\includegraphics[width=\textwidth]{fig5_depth_decay}
+\caption{Left: test accuracy versus depth (width 64, MNIST). Standard SO-PC matches BP at one--two
+hidden layers but collapses as depth grows, while the matched BP baseline holds; a local precision
+schedule $\Pi_k=\gamma^{(n-k)}$ recovers much of the gap. Right: per-layer learning signal
+$\lVert\Delta W_i\rVert$ at the deepest network --- it decays exponentially toward the input under
+standard SO-PC (output/input ratio $\sim\!669\times$) and is flattened $\sim\!10$--$30\times$ by the
+precision schedule.}\label{fig:depth-decay}
+\end{figure}
+
+\begin{table}[t]\centering
+\caption{Test accuracy (\%) versus depth (width 64, MNIST, 3 seeds). SO-PC collapses with depth while
+matched BP holds; a local precision schedule recovers much of the gap at moderate depth, with the
+optimal $\gamma$ falling as the $\gamma^{\text{depth}}$ gain compounds.}\label{tab:depth}
+\begin{tabular}{lccc}
+\toprule
+hidden layers & BP & SO-PC & SO-PC $+$ precision ($\gamma{=}1.35$) \\
+\midrule
+1 & 67.1 & 68.2 & --- \\
+2 & 67.4 & 65.2 & --- \\
+4 & 65.7 & 36.0 & 57.3 \\
+6 & 65.1 & 25.2 & 45.1 \\
+8 & 63.8 & 21.4 & 37.6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Reproducing the signal decay}
+Standard SO-PC matches BP at one or two hidden layers but collapses as depth grows, while the BP
+baseline (same initialisation) is essentially flat (\Cref{tab:depth}). The mechanism is the
+exponential signal decay of \Cref{sec:so-pc}: at the deepest network the per-layer learning signal
+$\lVert\Delta W_i\rVert$ falls by a factor of $\sim\!669$ from the output-side to the input-side
+layer, so early layers receive almost no signal and never train. This reproduces the established
+phenomenon \citep{goemaere2025epc, qi2025settling} on MNIST.
+
+\subsection{A local precision schedule mitigates it --- but is a known technique}
+A purely local, per-layer precision gain $\Pi_k=\gamma^{(n-k)}$ (input-side layers given higher
+precision, amplifying their decayed error during settling) recovers a large part of the collapse:
+at a single safe gain $\gamma=1.35$, from $36/25/21\%$ to $57/45/38\%$ at depths $4/6/8$
+(\Cref{tab:depth}), robustly across three seeds. It is \emph{mechanistically} fixing the decay ---
+it flattens the per-layer signal profile by $10$--$30\times$ (output/input ratio
+$\sim\!669\times\to22\times$ at depth eight) --- rather than coincidentally helping accuracy. A
+higher gain recovers even more at shallow depth (a sweep gives $\gamma=1.5\to62/56\%$ at depths
+$4/6$) but \emph{destabilises} at depth eight, exactly the stability-versus-compensation trade-off
+expected from the compounding $\gamma^{\text{depth}}$ gain: the optimal $\gamma$ must fall as depth
+grows.
+
+We stress that this is \emph{not} a novel fix. Layer- and time-dependent precision schedules for deep
+PC are published \citep{qi2025settling, innocenti2025mupc}, where they restore
+backpropagation-equivalent performance beyond seven layers --- more effectively than the
+single-parameter schedule used here. The error-optimisation reparametrisation
+\citep{goemaere2025epc} removes the decay outright by transporting the signal with global
+backpropagation, at the cost of the local, parallel structure that motivates our kernel
+(\Cref{ch:discussion}). Our contribution here is the clean reproduction and the honest mapping of
+where a local mitigation does and does not suffice, not the mitigation itself.
+
 \bigskip
 
 \noindent\textbf{Chapter summary.} The fused kernel is a real but bounded engineering win

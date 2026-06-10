@@ -143,6 +143,44 @@ def fig_launch_count():
     _save(fig, "fig4_launch_count")
 
 
+def fig_depth_decay():
+    sd = _load("signal_decay_w64_T20.json")
+    lf = _load("local_decay_fix_verify.json")
+    rows = sorted(sd["rows"], key=lambda r: r["hidden"])
+    depths = [r["hidden"] for r in rows]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    # Panel A: accuracy vs depth (BP, SO-PC, SO-PC+precision)
+    axes[0].plot(depths, [r["bp_acc"] * 100 for r in rows], marker="s", color=C["BP_MSE"], label="BP (MSE)")
+    axes[0].plot(depths, [r["pc_acc"] * 100 for r in rows], marker="o", color=C["PC"], label="SO-PC")
+    bd = lf["by_depth"]
+    pdep = sorted(int(d) for d in bd)
+    g = "1.35"
+    axes[0].errorbar(pdep, [bd[str(d)]["gamma"][g]["mean"] * 100 for d in pdep],
+                     yerr=[bd[str(d)]["gamma"][g]["std"] * 100 for d in pdep],
+                     marker="^", color="#9467bd", capsize=3, label=r"SO-PC + precision ($\gamma$=1.35)")
+    axes[0].axhline(10, ls=":", color="gray", lw=1, label="chance (1/10)")
+    axes[0].set_xticks(depths)
+    axes[0].set_xlabel("hidden layers (depth)")
+    axes[0].set_ylabel("test accuracy [%]")
+    axes[0].set_title("SO-PC collapses with depth; BP holds;\na local precision schedule recovers much of it")
+    axes[0].legend(frameon=False, fontsize=8)
+    # Panel B: per-layer learning signal at the deepest net (the decay + its flattening)
+    pr = lf["profiles"]
+    base, fix = pr["1.0"]["profile"], pr[g]["profile"]
+    li = list(range(len(base)))
+    axes[1].plot(li, base, marker="o", color=C["PC"], label=f"SO-PC (ratio {pr['1.0']['out_in_ratio']:.0f}x)")
+    axes[1].plot(li, fix, marker="^", color="#9467bd", label=f"+ precision (ratio {pr[g]['out_in_ratio']:.0f}x)")
+    axes[1].set_yscale("log")
+    axes[1].set_xticks(li)
+    axes[1].set_xlabel("layer index  (input -> output)")
+    axes[1].set_ylabel(r"per-layer signal $\|\Delta W_i\|$  (log)")
+    axes[1].set_title(f"Precision flattens the signal decay\n(deepest net, {lf['mechanism_depth']} hidden layers)")
+    axes[1].legend(frameon=False, fontsize=8)
+    fig.suptitle("Depth, signal decay, and a (known) local precision mitigation — width 64, MNIST", fontsize=10)
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    _save(fig, "fig5_depth_decay")
+
+
 if __name__ == "__main__":
     import matplotlib.ticker  # noqa: F401  (ScalarFormatter used above)
     print("writing figures to figures/ :")
@@ -150,4 +188,5 @@ if __name__ == "__main__":
     fig_pc_vs_bp()
     fig_budget_sweep()
     fig_launch_count()
+    fig_depth_decay()
     print("done.")

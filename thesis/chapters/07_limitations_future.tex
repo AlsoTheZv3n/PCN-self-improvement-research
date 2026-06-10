@@ -225,13 +225,18 @@ building block, not a scaling result.
 
 Closely related, the depth-scaling failure of PC---the observation that deeper
 PC-trained networks are often \emph{worse}, the opposite of BP, driven by an
-exponential signal-decay problem \citep{goemaere2025epc}---is avoided at our depth
-rather than addressed. Our networks are shallow enough that signal decay does not
-dominate, and while the general-depth kernel validates correctness up to five layers,
-correctness is not the same as trainability. We neither reproduce the depth-scaling
-failure systematically nor evaluate the proposed fixes (error optimisation,
-$\mu$P-style parametrisation, forward-anchored gradient corrections of
-\citet{qi2025settling}). The problem is acknowledged and deferred, not resolved.
+exponential signal-decay problem \citep{goemaere2025epc}---is \emph{characterised but
+not solved} here. We reproduce it cleanly (\Cref{sec:exp-decay}): standard SO-PC matches
+BP at one--two hidden layers but collapses to near-chance by eight, with the per-layer
+learning signal decaying $\sim\!669\times$ from output to input. We also show that a
+strictly local precision schedule $\Pi_k=\gamma^{(n-k)}$ mechanistically mitigates it
+(flattening the signal profile $10$--$30\times$ and recovering much of the accuracy at
+moderate depth), but only partially at depth eight, and---crucially---this is a
+\emph{known} technique \citep{qi2025settling, innocenti2025mupc}, not our contribution,
+and it is bettered by those works and by error optimisation \citep{goemaere2025epc}.
+What remains genuinely open for us is full deep-PC \emph{trainability}: matching BP at
+the depths where the published fixes operate, which is frontier-laboratory work. The
+problem is now mapped at our scale, not resolved.
 
 \subsubsection{Single optimiser regime and offline evaluation}
 
@@ -337,16 +342,17 @@ inpainting that prototype-driven reconstruction cannot.
 
 \subsubsection{Depth-scaling diagnostics and proposed fixes at small scale}
 
-Finally, although solving the depth-scaling problem is frontier work, a small project
-can \emph{characterise} it precisely. The concrete plan is to reproduce the
-``deeper-is-worse'' effect on MNIST across two, four, and eight hidden layers, measure
-and plot the per-layer energy and gradient distribution to expose the signal-decay
-imbalance, and then reimplement one proposed fix---error optimisation
-\citep{goemaere2025epc} or a $\mu$P-style parametrisation---on the small network to
-show whether it flattens the imbalance. This would convert the depth-scaling
-limitation from an acknowledged gap into a clean empirical study, and it is the
-single most valuable scientific extension that remains within reach of the present
-codebase.
+Finally, on the depth-scaling problem we have already taken the small-project step of
+\emph{characterising} it precisely (\Cref{sec:exp-decay}): the ``deeper-is-worse''
+effect is reproduced across two, four, six, and eight hidden layers, the per-layer
+learning-signal decay is measured and plotted, and one local fix (a precision schedule)
+is shown to mechanistically flatten the imbalance --- though it is a known technique and
+only partial at depth. The natural continuation is to implement error optimisation
+\citep{goemaere2025epc} as a fourth arm and complete the benchmark matrix (PyTorch-SO /
+fused-SO / EO / BP, over accuracy, wall-clock, and per-layer signal versus depth), which
+would turn the present ablation into a full comparative study of \emph{how} each method
+keeps deep PC trainable; reaching backpropagation-equivalent depth in a local formulation
+remains the frontier piece beyond it.
 
 \medskip
 

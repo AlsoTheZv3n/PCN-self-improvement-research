@@ -1,18 +1,101 @@
 \chapter{Appendix}\label{ch:appendix}
 
 \section{Exact Settling and Weight-Update Derivation}\label{app:derivation}
-% Planned content: full derivation of grad_sk = eps_k - phi'(s_k)(.)(W_k^T eps_{k+1}) and the
-% Hebbian dW from the energy E; the autograd equivalence used in the tests. Source: docs/09.
+
+We give the derivation that the implementation verifies against autograd (\Cref{ch:method}). With
+states $s_0$ (input, clamped to $x$), $s_1,\dots,s_{n-1}$ (free hidden), and $s_n$ (output, clamped
+to the one-hot target in training), the top-down prediction and prediction error are
+\[
+\mathrm{pred}_{k} = W_{k-1}\,\phi(s_{k-1}) + b_{k-1},
+\qquad
+\varepsilon_k = s_k - \mathrm{pred}_k,\quad k=1,\dots,n,
+\]
+and the energy is $E = \tfrac12\sum_{k=1}^{n}\lVert\varepsilon_k\rVert^2$ (isotropic precision
+$\Pi=I$).
+
+\paragraph{State gradient (inference).} The state $s_k$ enters the energy through $\varepsilon_k$
+directly ($\partial\varepsilon_k/\partial s_k = I$) and through $\varepsilon_{k+1}$ via the
+prediction $\mathrm{pred}_{k+1}=W_k\phi(s_k)+b_k$, whose Jacobian is
+$\partial\varepsilon_{k+1}/\partial s_k = -W_k\,\mathrm{diag}(\phi'(s_k))$. Hence
+\[
+\frac{\partial E}{\partial s_k}
+= \varepsilon_k - \phi'(s_k)\odot\big(W_k^{\top}\varepsilon_{k+1}\big),
+\qquad
+\frac{\partial E}{\partial s_n}=\varepsilon_n,
+\]
+and the (Jacobi, all free layers in parallel) settling step is
+$s_k \leftarrow s_k - \eta_x\,\partial E/\partial s_k$. The output term drops for the clamped layer;
+the input term appears only when the input is left free (generation/inpainting, \Cref{sec:exp-gen}).
+
+\paragraph{Weight gradient (learning).} The weight $W_i$ enters only through
+$\varepsilon_{i+1}=s_{i+1}-W_i\phi(s_i)-b_i$, so
+$\partial E/\partial W_i = -\varepsilon_{i+1}\,\phi(s_i)^{\top}$ and
+$\partial E/\partial b_i = -\varepsilon_{i+1}$. Gradient \emph{descent} on $E$ at the settled state
+gives the purely local Hebbian update
+\[
+W_i \leftarrow W_i + \eta_w\,\varepsilon_{i+1}\,\phi(s_i)^{\top},
+\qquad
+b_i \leftarrow b_i + \eta_w\,\overline{\varepsilon_{i+1}},
+\]
+where $\overline{\cdot}$ is the batch mean. Both gradients are checked against
+\texttt{torch.autograd} to $\sim\!10^{-5}$ in the test suite, with autograd used purely as an
+external oracle and never in the learning path.
 
 \section{Kernel Implementation Details}\label{app:kernel}
-% Planned content: shared-memory layout (v1/v2/v3 + general-depth offset computation), the
-% int64 pointer-array convention, the dispatch thresholds; a listing of the key device
-% functions. Source: settling_kernel.cu, docs/07.
+
+The fused settling kernel (\Cref{sec:kernel}; \texttt{pcn/kernels/settling\_kernel.cu}) runs the
+whole $T$-step loop in one launch with the layer states resident in shared memory across steps.
+
+\paragraph{Variants.} \textbf{v1} (\texttt{settle\_kernel}) assigns one thread block per sample and
+stages $s_k$, $\varepsilon_k$, and $\phi(s_k)$ in shared memory; it maximises block parallelism and
+wins at small batch. \textbf{v2} (\texttt{settle\_kernel\_tiled}) assigns one block per tile of
+$\mathrm{TB}=8$ samples, reading each weight element once and reusing it across the tile (the key
+GEMM optimisation) to win at larger batch; the batch is zero-padded to a multiple of $\mathrm{TB}$.
+\textbf{v3} additionally caches the clamped (hence constant) $\phi(\text{input})$ tile in shared
+memory, removing $\sim\!256\times$ redundant global reads. \texttt{settle()} dispatches v1/v2 by
+batch size (\texttt{TILED\_THRESHOLD}=128).
+
+\paragraph{General depth.} A fourth variant (\texttt{settle\_kernel\_deep}) lifts the
+two-hidden-layer specialisation to arbitrary depth: the per-layer weight, state, and bias buffers
+are passed as \emph{arrays of device pointers} (encoded as \texttt{int64} addresses) together with
+the per-layer sizes and shared-memory offsets computed at launch, and the same Jacobi update is run
+over a runtime-variable number of layers. Activations covered are $\tanh$ (code 0), identity (1),
+and sigmoid (2). One portability trap is worth recording: on Windows \texttt{long} is 32-bit, so the
+pointer arrays must be typed \texttt{int64\_t} (\texttt{long long}); typing them \texttt{long}
+silently truncates the addresses.
+
+\paragraph{Build and correctness.} The \texttt{.cu} is compiled at first use via
+\texttt{torch.utils.cpp\_extension.load} (no \texttt{biber}-style toolchain; needs nvcc + MSVC). The
+correctness gate \texttt{scripts/verify\_kernel.py} requires \texttt{allclose} $\sim\!10^{-6}$
+against the PyTorch backend across $\{\tanh,\text{identity},\text{sigmoid}\}\times$ depths one to
+four $\times$ batch $\{32,256\}$, checked in a \emph{stable} settling regime (an unstable
+configuration amplifies floating-point reordering into a spurious mismatch).
 
 \section{Additional Results}\label{app:results}
-% Planned content: full per-seed tables (PC-vs-BP arms, the n=10 budget sweep), the kernel
-% benchmark + launch-count tables, the LR-tuning scans. Source: results/*.json.
+
+All raw artifacts are released under \texttt{results/*.json}; the figures
+(\texttt{scripts/make\_figures.py}) and tables are generated from them so the plotted and tabulated
+values share one source of truth. Per-seed values underlying the aggregate statistics are stored in
+the artifacts --- for example the ten per-seed mean-both accuracies of the Song-faithful budget
+sweep (\Cref{sec:exp-song}) in \texttt{m4\_alternating\_song\_exact\_budgetsweep\_s10.json}, the
+kernel wall-clock and launch counts in \texttt{m6\_kernel\_benchmark.json} /
+\texttt{m6\_launch\_count.json}, and the depth-ablation accuracies and per-layer signal profiles
+(\Cref{sec:exp-decay}) in \texttt{signal\_decay\_w64\_T20.json} and
+\texttt{local\_decay\_fix\_verify.json}. The fair PC-vs-BP arms with bootstrap intervals are in
+\texttt{m4\_compare3\_T40\_e8\_s3.json}.
 
 \section{Reproducibility}\label{app:repro}
-% Planned content: environment (uv, cu126), exact commands to reproduce each figure/table, the
-% 40-test inventory, the public repository and commit hashes. Source: README.md, CLAUDE.md.
+
+The project uses \texttt{uv} exclusively, with the PyTorch CUDA index pinned to match the local
+toolkit (cu126). The offline test suite (\texttt{uv run pytest -q}, 40 tests) covers the settling
+and weight-update gradients against autograd, the continual-learning metrics, the API contract, and
+the EWC/iPC paths, and downloads no data. Each experiment is a script under \texttt{scripts/}:
+\texttt{run\_experiments.py} (the fair comparison, continual, class-IL, and Song-exact alternating
+studies), \texttt{bench\_kernel.py} and \texttt{profile\_launches.py} (kernel speed and launch
+count), \texttt{verify\_kernel.py} (kernel correctness gate), \texttt{signal\_decay.py} and
+\texttt{local\_decay\_fix.py} (the depth ablation), and \texttt{make\_figures.py} (all figures from
+the JSON artifacts). The optional CUDA kernel is opt-in via the \texttt{PCN\_CUDA\_KERNEL=1}
+environment flag and a build in an MSVC (\texttt{vcvars64}) shell; the default backend is pure
+PyTorch and fully functional. The complete source, tests, figures, artifacts, and this thesis are
+public at \url{https://github.com/AlsoTheZv3n/PCN-self-improvement-research}; the thesis compiles
+with \texttt{tectonic main.tex} (or \texttt{latexmk -pdf}).

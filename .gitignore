@@ -28,3 +28,17 @@ dist/
 .claude/
 .DS_Store
 Thumbs.db
+
+# LaTeX build intermediates (thesis/ source is tracked; PDF is regenerable via tectonic)
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+thesis/main.pdf
