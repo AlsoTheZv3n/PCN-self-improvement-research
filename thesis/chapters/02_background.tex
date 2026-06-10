@@ -1,31 +1,337 @@
 \chapter{Background}\label{ch:background}
 
+This chapter develops the theoretical machinery that the rest of the thesis rests upon.
+It is deliberately self-contained and pedagogical: we begin from the familiar feedforward
+multilayer perceptron (MLP) trained by backpropagation, introduce the predictive-coding (PC)
+energy that reinterprets a network as an inference problem, derive the State-Optimization (SO)
+settling dynamics and the local Hebbian weight rule in full, and only then turn to the precise
+relationship between PC and backpropagation. We restrict ourselves throughout to \emph{theory}.
+Our concrete implementation choices, the libraries that preceded us, and our empirical results
+are deferred to \Cref{ch:method,ch:related,ch:experiments} respectively. The aim here is that a
+reader who has never seen predictive coding should, by the end of the chapter, be able to read
+the settling and update equations and understand exactly what each term does and why.
+
 \section{Notation and the MLP Baseline}
-% Planned content: layer sizes, activations, the feedforward MLP and BP as the reference;
-% notation used throughout (states s_k, weights W_i, errors eps_k, activation phi).
+
+We fix notation now and use it consistently for the remainder of the thesis. Consider a network
+of $n+1$ layers indexed $0,1,\dots,n$. Layer $0$ holds the input and layer $n$ holds the output;
+the layers in between are hidden. We write the \emph{state} (the vector of unit activities) of
+layer $k$ as $s_k$, the weight matrix mapping layer $i$ to layer $i+1$ as $W_i$, and the
+corresponding bias as $b_i$. The element-wise activation function is $\phi$ (we use $\tanh$ as the
+default throughout, with the sigmoid reserved for one faithfulness replication), and $\phi'$
+denotes its derivative. Layer sizes for our running MNIST example are
+$784 \to 256 \to 256 \to 10$: a $784$-dimensional pixel vector, two hidden layers of width $256$,
+and a $10$-dimensional output read as a one-hot class label \citep{lecun1998mnist}.
+
+\subsection{The feedforward MLP}
+
+The ordinary feedforward MLP computes its activities by a single forward sweep. Writing the
+pre-activation of layer $i+1$ as
+\begin{equation}
+  \mathit{pred}_{i+1} = W_i\,\phi(s_i) + b_i ,
+  \label{eq:prediction}
+\end{equation}
+the MLP simply \emph{assigns} $s_{i+1} = \mathit{pred}_{i+1}$ for every layer in turn, starting
+from the clamped input $s_0 = x$ and ending at the output $s_n$. We deliberately call the
+right-hand side of \cref{eq:prediction} a \emph{prediction}: it is the higher layer's best guess,
+given $s_i$, of what the activity of layer $i+1$ ought to be. In a plain MLP that guess is taken
+as gospel and copied into $s_{i+1}$. The central conceptual move of predictive coding, developed
+below, is to stop treating the prediction as definitive and instead let the actual activity
+$s_{i+1}$ disagree with it; the discrepancy is precisely what drives learning.
+
+\subsection{Backpropagation as the reference}
+
+Given a differentiable scalar loss $\mathcal{L}(s_n, y)$ comparing the output to a target $y$,
+backpropagation (BP) computes the gradient of $\mathcal{L}$ with respect to every weight by the
+chain rule, propagating an error signal from the output back toward the input. Two properties of
+this procedure matter for what follows. First, the weight update for layer $i$ depends on a
+quantity transported from \emph{all} downstream layers: the backward pass threads the transposed
+weight matrices $W_{i+1}^\top, W_{i+2}^\top, \dots$ in sequence, so the signal reaching layer $i$
+has been routed through the entire upper part of the network. This non-locality is the
+``weight-transport problem'' often cited as a reason BP is biologically implausible. Second, BP
+changes the weights \emph{first}; any change in the network's activities is a downstream
+consequence of the next forward pass, not part of the learning step itself. We will see that
+predictive coding inverts both of these properties: its weight update is strictly local, and it
+changes activities \emph{before} it touches the weights. Throughout the thesis, a matched-size MLP
+trained by BP under PyTorch autograd \citep{paszke2019pytorch} serves as the reference against
+which PC is measured; the discipline required to make that comparison fair is the subject of
+\Cref{sec:protocol}.
 
 \section{Predictive Coding: The Energy Formulation}
-% Planned content: Rao & Ballard hierarchical PC; the free-energy / precision-weighted
-% prediction-error energy E = 1/2 sum ||eps_k||^2; isotropic precision (Pi=I) as the modern
-% default. Sources: docs/01, docs/10, docs/11.
+
+Predictive coding originates in computational neuroscience as a theory of cortical processing
+\citep{rao1999predictive}: higher cortical areas send \emph{predictions} of activity down to lower
+areas, and only the residual \emph{prediction error}---the part of the lower activity that the
+prediction failed to explain---is sent back up. Learning and perception both reduce to making
+those prediction errors small. \citet{bogacz2017tutorial} recast this picture in the language of
+the variational free-energy framework and gave the tutorial derivation we follow here;
+\citet{millidge2021review} survey the multi-layer formulation in detail. The result is a network
+that is defined not by a forward function but by a single scalar \emph{energy}.
+
+\subsection{Prediction errors and the energy}
+
+For each layer $k \in \{1,\dots,n\}$ we define the prediction error as the difference between the
+layer's actual state and the top-down prediction of it from the layer below,
+\begin{equation}
+  \varepsilon_k = s_k - \mathit{pred}_k = s_k - \bigl(W_{k-1}\,\phi(s_{k-1}) + b_{k-1}\bigr).
+  \label{eq:error}
+\end{equation}
+The network's \emph{energy} is the precision-weighted sum of squared prediction errors. In full
+generality each layer carries a precision matrix $\Pi_k$ (the inverse covariance of the assumed
+Gaussian noise on that layer), giving
+\begin{equation}
+  E = \tfrac{1}{2}\sum_{k=1}^{n} \varepsilon_k^\top \Pi_k\, \varepsilon_k .
+  \label{eq:free-energy}
+\end{equation}
+This is exactly the Gaussian form of the variational free energy of the free-energy principle,
+wired layer-by-layer into the network \citep{bogacz2017tutorial,millidge2021review}. It is worth
+stressing what \cref{eq:free-energy} \emph{is}: a single number that measures how badly the
+network's own top-down model fails to explain its activities. Perception and learning are then two
+ways of pushing $E$ downhill---by adjusting the activities $s_k$ (inference) or by adjusting the
+weights $W_i$ (learning), respectively.
+
+\subsection{Isotropic precision as the modern default}
+
+When every precision is the identity, $\Pi_k = I$, the quadratic form in \cref{eq:free-energy}
+collapses to a plain sum of squared errors,
+\begin{equation}
+  E = \tfrac{1}{2}\sum_{k=1}^{n} \lVert \varepsilon_k \rVert^2 .
+  \label{eq:sse-energy}
+\end{equation}
+This \emph{isotropic} (precision-free) energy is the formulation we adopt for the entire thesis,
+and it is the mainstream choice in modern PC research on image classification: contemporary
+benchmark libraries fix the covariance to the identity explicitly rather than learning it
+\citep{pinchetti2024pcx,millidge2024jpc}. Non-identity precision is a genuine and theoretically
+well-motivated feature---a per-layer scalar precision schedule is the lever that helps very deep
+PC networks train at all \citep{qi2025settling}---but its benefits accrue mainly beyond roughly
+seven layers and are orthogonal to the questions this thesis asks. For the shallow MNIST-scale
+networks studied here, $\Pi_k = I$ is both adequate and standard, and we treat
+\cref{eq:sse-energy} as the energy of record. We note in passing that an attentive reader will
+have spotted a notational subtlety: \cref{eq:error} indexes predictions in the
+\emph{feedforward} direction (layer $i$ predicts layer $i+1$), whereas the neuroscience literature
+often writes them top-down. The two conventions are identical under an index flip
+\citep{millidge2021review}; we use the feedforward convention consistently because it is the one
+the settling dynamics and the kernel of \Cref{sec:kernel} are written in.
 
 \section{State-Optimization PC: Settling and the Local Update}\label{sec:so-pc}
-% Planned content: THE exact algorithm (docs/09). Feedforward indexing (layer i predicts i+1):
-% pred_{i+1}=W_i phi(s_i)+b_i. Inference (settling): s_k <- s_k - lambda(eps_k -
-% phi'(s_k) (.) (W_k^T eps_{k+1})). Local Hebbian weight update at equilibrium:
-% dW_i ∝ eps_{i+1} phi(s_i)^T. Clamping conventions (input always; output in training).
-% This is the math the kernel fuses and the tests verify.
+
+We now give the exact algorithm that the rest of the thesis implements, benchmarks, and verifies.
+``State Optimization'' (SO) is the standard predictive-coding formulation: it minimizes the energy
+\cref{eq:sse-energy} by gradient descent, alternating two phases. In the \emph{inference} (or
+\emph{settling}) phase the weights are held fixed and the free states are relaxed toward an energy
+minimum; in the \emph{learning} phase the states are held at that minimum and the weights take a
+single gradient step. Because both phases are gradient descent on the \emph{same} energy, the
+whole scheme is a coordinate-descent on $E$ over the joint variables $(s,W)$. The presentation
+here follows the algorithm exactly as we implement it (cf.\ \texttt{pcn/settling.py} and
+\texttt{pcn/model.py}); it is the SO algorithm distilled from \citet{goemaere2025epc}.
+
+\subsection{Clamping conventions}
+
+Before the dynamics we must say which states are pinned and which are free, because this is the
+single point most easily got wrong. The input layer $s_0$ is always clamped to the image $x$.
+During \emph{training} the output layer $s_n$ is additionally clamped to the one-hot label $y$, so
+only the hidden states settle; the equilibrium configuration is then read off to update the
+weights. At \emph{test} time only the input is clamped, the output is left free, and the predicted
+class is the $\arg\max$ over the settled output state---we let the label node settle rather than
+supplying it, which is precisely the difference between classifying and merely reconstructing.
+A third, \emph{generative} convention clamps the label at the top and lets the input settle at the
+bottom, ``painting'' an image; whether this produces digits or noise depends on the training
+objective, a subtlety we return to in \cref{sec:gen-disc}.
+
+\subsection{Feedforward initialization}
+
+Settling needs a starting point. We initialize the states by a single feedforward sweep,
+\begin{equation}
+  s_0 = x, \qquad s_i = \mathit{pred}_i = W_{i-1}\,\phi(s_{i-1}) + b_{i-1}
+  \quad\text{for } i = 1,\dots,n,
+\end{equation}
+computed sequentially layer by layer. This choice is not arbitrary: copying each prediction into
+the corresponding state makes every internal prediction error \cref{eq:error} exactly zero, so the
+network starts at the bottom of the ``internal'' part of the energy landscape with all the
+residual energy concentrated at the output. As \citet{goemaere2025epc} observe, this feedforward
+heuristic works well because it coincides with the first step of the settling dynamics itself.
+
+\subsection{The settling dynamics}
+
+In the inference phase the weights are fixed and we descend the energy in the states. The gradient
+of \cref{eq:sse-energy} with respect to a free state $s_k$ has two contributions, and the
+structure of these two terms is the entire conceptual content of PC inference. Differentiating,
+\begin{equation}
+  \nabla_{s_k} E \;=\; \underbrace{\varepsilon_k}_{\text{own error}}
+  \;-\; \underbrace{\phi'(s_k)\odot\bigl(W_k^\top\,\varepsilon_{k+1}\bigr)}_{\text{error caused below}},
+  \label{eq:state-grad}
+\end{equation}
+where $\odot$ is the element-wise (Hadamard) product. The state then takes a step downhill,
+\begin{equation}
+  s_k \;\leftarrow\; s_k - \eta_x\,\nabla_{s_k} E
+  \;=\; s_k - \eta_x\Bigl(\varepsilon_k - \phi'(s_k)\odot\bigl(W_k^\top\,\varepsilon_{k+1}\bigr)\Bigr),
+  \label{eq:state-update}
+\end{equation}
+with $\eta_x$ the state learning rate (also written $\lambda$). The two terms have a clean
+interpretation. The first, $\varepsilon_k$, is the error that layer $k$ itself incurs against the
+prediction coming from below; moving $s_k$ to reduce it makes the layer better match what was
+expected of it. The second term is the error that $s_k$ \emph{causes} in the layer above:
+$\varepsilon_{k+1}$ depends on $s_k$ through $\mathit{pred}_{k+1} = W_k\phi(s_k) + b_k$, and the
+chain rule produces the transposed weight $W_k^\top$ gated by the local activation derivative
+$\phi'(s_k)$. Each unit therefore moves so as to simultaneously reduce its own mismatch and the
+mismatch it propagates upward. Iterating \cref{eq:state-update} for $t = 1,\dots,T$ steps lets the
+network ``settle'' into an energy minimum. Two boundary conditions complete the picture: a clamped
+state (input always; output during training) is simply not updated, and for the free output layer
+$k=n$ there is no layer above, so the second term vanishes and $\nabla_{s_n} E = \varepsilon_n$.
+
+A note on implementation that is also conceptually load-bearing: within a single settling step the
+updates over layers are computed in \emph{parallel} (a Jacobi sweep), because every
+$\varepsilon_k$ and every $\nabla_{s_k} E$ depends only on quantities from the previous step. Only
+the loop over the $T$ steps and the feedforward initialization are inherently sequential. This
+parallel-over-layers, sequential-over-time structure is exactly what the fused settling kernel of
+\Cref{sec:kernel} exploits, and the state gradient \cref{eq:state-grad} is the quantity our tests
+verify against automatic differentiation.
+
+\subsection{The signal-decay caveat}
+
+A subtlety of the settling dynamics deserves mention, both because it bounds the regime in which
+SO is well behaved and because it motivates work discussed in \Cref{ch:related}. At feedforward
+initialization all internal errors are zero and only the output error is non-zero. The settling
+update \cref{eq:state-update} then carries that signal backward through the network at a rate of
+roughly one layer per step, attenuated at each step by the factor $\eta_x < 1$ needed for
+stability. The error norm reaching a layer $i$ steps below the output therefore scales
+binomially, $\lVert\varepsilon_{n-i}\rVert \propto \eta_x^{\,i}(1-\eta_x)^{\,t-i}$, an exponential
+decay with depth \citep{goemaere2025epc}. For small $\eta_x$ this drives the deep-layer errors
+below the floating-point floor within a handful of steps, leaving deep layers effectively
+untrained. For the shallow MNIST networks of this thesis the effect is negligible---two or three
+hidden layers are simply not deep enough---so SO works well; the decay only becomes a genuine
+obstacle at depths well beyond what we study. It does, however, refine the folklore on how many
+settling steps are needed: the safe lower bound is $T \ge L$ for an $L$-layer network
+\citep{qi2025settling}, with the upper bound governed by the decay rather than by a fixed multiple
+of depth.
+
+\subsection{The local Hebbian weight update}
+
+Once the states have settled to (approximate) equilibrium we hold them fixed and take one gradient
+step in the weights. The gradient of \cref{eq:sse-energy} with respect to $W_i$ is, by
+\cref{eq:error},
+\begin{equation}
+  \nabla_{W_i} E = -\,\varepsilon_{i+1}\,\phi(s_i)^\top ,
+\end{equation}
+so the weight update is
+\begin{equation}
+  W_i \;\leftarrow\; W_i + \eta_w\,\varepsilon_{i+1}\,\phi(s_i)^\top ,
+  \label{eq:weight-update}
+\end{equation}
+with $\eta_w$ the weight learning rate (kept separate from $\eta_x$ throughout). This is the heart
+of the whole approach. The update for $W_i$ requires \emph{only} the prediction error of the layer
+above, $\varepsilon_{i+1}$, and the activity of the layer below, $\phi(s_i)$---both quantities
+local to the synapse $W_i$ connects. It is a Hebbian outer product of a presynaptic activity and a
+postsynaptic error: there is no global backward pass, and no chain of transposed weight matrices
+threaded across the whole network \citep{whittington2017approximation,bogacz2017tutorial}. The
+weight-transport problem that makes backpropagation biologically implausible simply does not
+arise. This locality is what the term ``local learning'' in the title of this thesis refers to,
+and recovering it on a parallel accelerator without sacrificing speed is the engineering problem
+\Cref{sec:kernel} attacks.
 
 \section{Relation to Backpropagation}
-% Planned content: PC approximates BP under the fixed-prediction assumption (Whittington &
-% Bogacz 2017; Millidge, Tschantz & Buckley 2022); "prospective configuration" is the
-% equilibrium of standard energy-based PC, not a separate algorithm (Song et al. 2024).
+
+Predictive coding and backpropagation are not unrelated algorithms that happen to solve the same
+task; under a precise and well-studied assumption, the local PC update of \cref{eq:weight-update}
+\emph{computes the same gradient} that backpropagation would. Understanding exactly when this holds
+is essential to interpreting our comparison results honestly, so we state it carefully.
+
+\subsection{The fixed-prediction equivalence}
+
+The foundational result is due to \citet{whittington2017approximation}: a supervised predictive
+coding network with value nodes, error nodes, transposed-weight feedback gated by the activation
+derivative, and the local Hebbian rule \cref{eq:weight-update} \emph{approximates} the
+backpropagation gradient, and does so without any non-local plasticity. \citet{millidge2022backprop}
+generalized this from layered MLPs to arbitrary computation graphs. The mechanism is the
+following. If the network is at the feedforward state---the configuration in which every internal
+error is zero and only the output error is non-zero---then the settling update
+\cref{eq:state-update}, run for a short time, transports the output error backward through exactly
+the transposed weights $W_k^\top$ gated by $\phi'(s_k)$ that backpropagation uses. Under this
+``fixed-prediction'' assumption, the prediction errors $\varepsilon_k$ at the layers come to equal
+the backpropagated error signals, and the local update \cref{eq:weight-update} reproduces the BP
+weight gradient. In the limiting case the correspondence is exact \citep{whittington2017approximation}.
+A PC network can therefore learn the same thing as an MLP, but by minimizing free energy rather
+than by applying the chain rule.
+
+\subsection{Prospective configuration is the equilibrium, not a separate algorithm}
+
+This equivalence is sometimes obscured by the framing of ``prospective configuration''
+\citep{song2024prospective}. In that framing, a PC network first changes its neural activity
+across the network so that the output neurons better predict the target, and \emph{then}
+consolidates that activity change into the weights---the reverse of backpropagation's
+weights-first, activity-follows ordering. It is important to be clear that prospective
+configuration is not a new learning rule grafted onto PC: it is simply a name for the behavior of
+standard energy-based PC when the activities are allowed to relax to equilibrium before the weights
+move. The inference-before-learning two-phase structure of \cref{sec:so-pc} \emph{is} prospective
+configuration. The substantive empirical claim attached to the term---that this ordering helps in
+regimes such as online, continual, and few-shot learning---is a separate matter that we test
+directly and report, with appropriate caveats, in \Cref{sec:exp-pcbp,sec:exp-song}.
 
 \section{When Does PC Equal BP?}
-% Planned content: the restricted regimes where convergence to BP is provable (linear residual
-% nets, width >> depth, equilibrated activities; Innocenti, Achour & Bogacz 2026); the open
-% question of *when* PC does something genuinely different — the framing for the RQ1 study.
 
-\section{Generative versus Discriminative PC}
-% Planned content: orientation matters — a discriminative net (image->label) cannot generate;
-% a generative net (label->image) can. Sets up the Chapter 5 capability result.
+Given that PC can recover the BP gradient under the fixed-prediction assumption, the natural
+question---and the one that frames our first research question---is the converse: \emph{when does
+PC do something genuinely different from BP?} The answer determines whether predictive coding is
+merely a biologically flavored re-derivation of backpropagation or a distinct learning algorithm
+with its own behavior, and it must be stated with care to avoid overclaiming in either direction.
+
+\subsection{The provable equivalence regimes are narrow}
+
+The conditions under which PC provably converges to BP are restrictive. The most recent analysis,
+\citet{innocenti2026limits}, shows that the PC energy with equilibrated activities converges to
+the quadratic backpropagation loss and yields the same gradients---but only for \emph{linear}
+residual networks, in the regime of \emph{width far greater than depth}, and only when the
+activity equilibrium is genuinely reached. This is emphatically \emph{not} an unconditional
+``PC $=$ BP'' statement; it is a careful limit theorem hedged by three structural conditions, and
+we cite it only with those conditions attached. Outside that regime---nonlinear activations,
+finite width comparable to depth, or settling stopped short of equilibrium---there is no guarantee
+that the PC gradient equals the BP gradient, and indeed the two can differ.
+
+\subsection{The role of the settling budget}
+
+There is a complementary way to see when the two coincide, phrased in terms of how much settling is
+allowed. If the supervision signal is infinitesimally small, or the settling is stopped almost
+immediately after feedforward initialization, the activities never move substantially away from
+the feedforward state, the fixed-prediction assumption holds tightly, and PC reduces to BP
+\citep{song2024prospective}. Any behavior in which PC differs from BP therefore requires
+\emph{substantial} settling: enough relaxation steps, and a large enough state learning rate, that
+the activities genuinely reconfigure before the weights move. Conversely, a PC experiment run with
+a tiny settling budget is measuring backpropagation in disguise and should be expected to show no
+PC-specific effect. This is a methodological razor we wield repeatedly in \Cref{ch:experiments}:
+a null result for PC is only informative if the settling was real. The open empirical question,
+then---the framing for RQ1---is whether, in the regimes where PC \emph{can} differ from BP, it
+actually does so to any measurable and reproducible degree on standard image-classification tasks.
+A sober reading of the literature is that the advantages reported for PC have not been consistently
+reproduced \citep{zahid2023curvature}, which is precisely why a fair, decounfounded comparison
+(\Cref{sec:protocol,sec:exp-pcbp}) is worth doing.
+
+\section{Generative versus Discriminative PC}\label{sec:gen-disc}
+
+A final distinction is needed because it governs what a PC network can and cannot do, and it is
+easy to assume more than the architecture delivers. The distinction is one of \emph{orientation}:
+which end of the network is treated as the latent cause and which as the observation.
+
+\subsection{Discriminative orientation}
+
+A \emph{discriminative} PC network is oriented image$\to$label: the input layer holds the image,
+the output layer holds the label, and predictions flow toward the label. This is the supervised
+classifier studied for most of this thesis, and it is what the clamping conventions of
+\cref{sec:so-pc} describe. Such a network classifies well, but it cannot generate: clamping a
+label at the output and letting the input settle does not paint a digit, because the network was
+never trained to predict pixels from a class. Doing so produces noise, not an image---a point we
+verify empirically rather than assume.
+
+\subsection{Generative orientation}
+
+A \emph{generative} PC network reverses the orientation, label$\to$image: a low-dimensional latent
+or label sits at the top and the image is predicted at the bottom, so the layer sizes run, for
+example, $10 \to 256 \to 256 \to 784$. Trained with the image clamped at the bottom and the
+latent free at the top, this network learns a top-down generative model of the data. The very same
+settling machinery of \cref{sec:so-pc} then supports a family of capabilities for free: clamping a
+class and settling the image produces per-class prototypes; clamping the visible pixels and
+settling the occluded ones performs inpainting; and the residual energy of a settled input,
+$\tfrac{1}{2}\sum_k\lVert\varepsilon_k\rVert^2$, serves directly as an anomaly score, since an
+input the model explains poorly leaves high residual energy. That a single energy and a single
+settling rule yield classification, generation, inpainting, and anomaly detection simply by
+changing what is clamped is one of the conceptually attractive features of predictive coding, and
+the capability demonstration in \Cref{sec:exp-gen} builds directly on this orientation distinction.

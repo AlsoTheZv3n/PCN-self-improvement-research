@@ -1,44 +1,477 @@
 \chapter{Method and Implementation}\label{ch:method}
 
-\section{From-Scratch PCN Architecture and Interface}
-% Planned content: pure-PyTorch tensor ops, every update under @torch.no_grad; the modules
-% (model.py, settling.py, learning.py, evaluate.py); the train_and_eval(config) contract as
-% the single abstraction. Sources: docs/01, docs/02, CLAUDE.md code-map.
+This chapter describes \emph{how} the study was built: the from-scratch State-Optimization
+predictive-coding (SO-PC) network and the single interface through which every experiment runs;
+the correctness regime that lets us trust hand-derived updates; the fused CUDA settling kernel
+that is the project's principal systems contribution; the fair-comparison protocol that
+disciplines the predictive-coding-versus-backpropagation (PC-vs-BP) question; the
+continual-learning harnesses (including a Song-exact alternating replication); the generative
+variant of the same machinery; the optional incremental-PC and elastic-weight-consolidation
+extensions; and the reproducibility tooling. Throughout, the emphasis is on design decisions and
+their justification. Quantitative outcomes are deferred to \Cref{ch:experiments}; the underlying
+PC mathematics is developed in \Cref{sec:so-pc} and is referenced here rather than re-derived.
 
-\section{Correctness: Hand-Derived Gradients vs.\ Autograd}
-% Planned content: the settling-state gradient and the Hebbian weight update are checked
-% against torch.autograd to ~1e-5 (autograd used only as an external oracle in tests); the
-% convergence tolerance making "settling-steps-to-converge" measurable.
+A single conviction shapes every choice below. The point of the project is to \emph{understand and
+demonstrate} a learning rule that is local --- one in which every parameter and state update can be
+computed from quantities available at the two layers it connects, with no global error signal
+propagated backward through the network. We therefore use PyTorch \citep{paszke2019pytorch} purely
+as a tensor engine: there is no call to \texttt{loss.backward()} anywhere on the PC path, and every
+state and weight update is performed by hand under \texttt{@torch.no\_grad()}. Autograd appears in
+exactly two places, both deliberate: as an external oracle in the gradient-correctness tests
+(\Cref{sec:method-correctness}), and as the learning rule of the backpropagation baseline against
+which PC is measured. This is not an aesthetic preference. If autograd silently supplied a gradient
+anywhere in the settling or learning loop, the claim ``this is local learning'' would be hollow, and
+the comparison with backprop would be circular. Keeping the PC arm autograd-free is what makes the
+study honest.
+
+\section{From-Scratch PCN Architecture and Interface}
+
+\subsection{The model object}
+
+The network is a small object, \texttt{PCN}, holding a list of weight matrices $W_i$, bias vectors
+$b_i$, an activation function $\phi$ together with its derivative $\phi'$, and bookkeeping for device
+and dtype. For a topology with layer sizes $[n_0, n_1, \dots, n_L]$ (input $n_0$, output $n_L$) there
+are $L$ weight matrices, where we write $L = n$ for the number of layers/transformations in the code.
+The single primitive the rest of the system relies on is the per-layer prediction
+\[
+  \mathrm{pred}_{i+1} = W_i\,\phi(s_i) + b_i,
+\]
+implemented as \texttt{predict(i, state)}. Everything else --- feedforward initialisation, settling,
+the local weight update, evaluation, the kernel, the baselines --- is expressed in terms of this one
+function, so that the forward computation is defined in exactly one place and cannot drift between
+the PC arm and its backprop control.
+
+Weights are initialised orthogonally by default. This is a substantive choice rather than a default
+inherited from convention: orthogonal initialisation keeps the layer-to-layer Jacobian eigenvalues
+near one, which mitigates the exponential signal decay that afflicts deep SO-PC during settling
+(\Cref{sec:so-pc} and the depth discussion below). The activation is \texttt{tanh} by default, with
+\texttt{identity} and \texttt{sigmoid} also supported; \texttt{sigmoid} matters because it is the
+activation Song et al.\ use in the regime we replicate (\Cref{sec:method-continual}).
+
+\subsection{Feedforward initialisation, settling, and the local update}
+
+Training proceeds per minibatch in four conceptual stages, matching the SO algorithm
+of \Cref{sec:so-pc}:
+
+\begin{enumerate}
+  \item \textbf{Feedforward init.} The input is clamped at $s_0 = x$ and the remaining states are
+  filled by a single forward pass, $s_{i+1} \gets \mathrm{pred}_{i+1}(s_i)$. By construction this
+  sets every internal error $\varepsilon_k = s_k - \mathrm{pred}_k$ to zero, so settling begins from a
+  zero-internal-energy state and only the clamped output injects a non-zero error. This is not merely
+  a convenient warm start: it coincides with the first step of the error-optimization view of PC, which
+  is part of why it is such a good initialiser.
+  \item \textbf{Clamp.} The input node is clamped to the image and (during training) the output node
+  is clamped to the one-hot label.
+  \item \textbf{Inference / settling.} With the weights held fixed, the free states are relaxed for up
+  to $T$ steps toward the energy minimum. Each step is a synchronous (Jacobi) update: all errors
+  $\varepsilon_k$ are computed first, then all free-state updates
+  $s_k \gets s_k - \eta_x\big(\varepsilon_k - \phi'(s_k)\odot (W_k^{\!\top}\varepsilon_{k+1})\big)$ are
+  applied from those errors, so that no layer's update sees another layer's change within the same step.
+  The output layer, when free at test time, updates with $\varepsilon_k$ alone.
+  \item \textbf{Learning.} At the settled equilibrium the weights are updated by the purely local
+  Hebbian rule $W_i \mathrel{+}= \eta_w\,\varepsilon_{i+1}\,\phi(s_i)^{\!\top}/B$ and
+  $b_i \mathrel{+}= \eta_w\,\overline{\varepsilon_{i+1}}$, with $B$ the batch size. Each update uses only the
+  post-synaptic error and the pre-synaptic activation of the layer it belongs to.
+\end{enumerate}
+
+The settling routine is deliberately compact --- on the order of fifty lines --- because it is the
+conceptual core of the repository and must be auditable line by line. It takes flags that, in the same
+few lines, support the discriminative training case (input and output clamped, hidden states free) and
+the generative / inpainting / anomaly cases (input free or partially masked), which is what lets the
+generative experiments reuse exactly the same dynamics (\Cref{sec:method-generative}).
+
+\subsection{The convergence criterion}
+
+By default settling runs a fixed number of steps $T$. We added an optional tolerance: when a relative
+energy-change threshold \texttt{tol} is supplied, the loop stops once
+$|E_t - E_{t-1}| / (|E_{t-1}| + \epsilon) < \texttt{tol}$. With \texttt{tol = None} the original
+fixed-$T$ behaviour is reproduced exactly. This small addition turns ``how many steps does settling
+need to converge?'' into a measurable quantity rather than a hyperparameter we assume. We use it as a
+diagnostic: \texttt{settling\_steps\_to\_converge} is measured on a training batch with a generous step
+cap (five times $T$, at least one hundred) and a reference tolerance of $10^{-3}$, so the reported value
+is the true number of steps the dynamics need to plateau, independent of the configured $T$. If that
+number exceeds the training $T$, the network is under-settling --- directly relevant because PC's
+claimed advantages are predicated on reaching the activity equilibrium \citep{song2024prospective,
+innocenti2026limits, qi2025settling}.
+
+\subsection{The \texttt{train\_and\_eval(config)} contract}
+
+The only deliberate abstraction in the system is a single function, \texttt{train\_and\_eval(config)
+$\rightarrow$ metrics}. It accepts a configuration dictionary --- hidden sizes, $T$, the state and
+weight learning rates, activation, weight init, number of epochs, batch size, seed, backend, and so on
+--- builds a PCN, trains it on MNIST \citep{lecun1998mnist}, and returns a metrics dictionary
+containing test accuracy, an energy curve (mean equilibrium energy per epoch), noise-robustness
+(accuracy across input-noise levels), training wall-clock, the settling-steps-to-converge diagnostic,
+and the fully resolved configuration. There is no plugin or adapter architecture: a single coherent
+implementation with one mechanism, exposed through one interface. The autonomous hyperparameter search
+(\Cref{sec:method-repro}) and the experiment harnesses are thin layers that call this function and log
+the result --- no rewrite, by design.
+
+Two small details in the contract guard against silent error, in keeping with the honesty principle.
+First, the thesis-specification names $\eta_x$ and $\eta_w$ are accepted as configuration aliases for
+the internal \texttt{lr\_state} and \texttt{lr\_weight}, with the spec names taking priority, so a config
+written to the documented notation is honoured rather than silently ignored. Second, unknown keys raise
+a warning instead of being dropped, and reserved-but-unimplemented features (non-isotropic precision
+schedules; update variants other than the implemented two) raise \texttt{NotImplementedError} rather
+than silently no-op'ing. The default weight learning rate was raised from $10^{-3}$ to $10^{-2}$ after
+the lower value was found to underfit MNIST; precision is hard-coded to the isotropic case $\Pi = I$,
+which reduces the energy $E = \tfrac12\sum_k \lVert\varepsilon_k\rVert^2$ to a plain sum of squared
+errors and is mathematically exact for that choice.
+
+\section{Correctness: Hand-Derived Gradients vs.\ Autograd}\label{sec:method-correctness}
+
+Because no autograd runs on the PC path, the burden of proof falls entirely on us: the settling update
+and the Hebbian weight update are gradients of the PC energy that we derived and transcribed by hand,
+including the easily-mistaken signs, the transpose on the feedback term $W_k^{\!\top}\varepsilon_{k+1}$,
+and the $\phi'(s_k)$ gating factor. A sign error or a missing transpose would not crash --- it would
+quietly train a slightly different objective and contaminate every comparison. We therefore treat
+correctness as a first-class deliverable and pin it down two ways.
+
+First, against an analytic reference. The exact SO update --- signs, transposition, and the $\phi'$
+gating --- is validated against an independent analytic NumPy derivation, and the implementation is
+held to match it; this is a hard convention of the project, not a one-off check. Second, against
+autograd as an external oracle. In the test suite (and only there) we build the same energy with
+autograd enabled and confirm that the hand-coded settling-state gradient and the hand-coded weight
+update agree with \texttt{torch.autograd} to roughly $10^{-5}$. This is the one legitimate use of
+autograd on the PC side: not to \emph{compute} the updates the network learns by, but to \emph{certify}
+that our local rules equal the true energy gradients. A complementary property test asserts that the PC
+energy decreases monotonically under settling on toy tensors, so that a regression in the dynamics is
+caught even when the analytic check passes. The tests are hermetic --- they run on small synthetic
+tensors with no MNIST download and complete on CPU --- so that correctness is cheap to re-verify on any
+machine (\Cref{sec:method-repro}). The exact derivations these checks target are given in
+\Cref{app:derivation}.
 
 \section{The Fused CUDA Settling Kernel}\label{sec:kernel}
-% Planned content: motivation (per-step launch overhead); v1 one block per sample; v2 one
-% block per TB-sample tile (weight reuse); v3 cached phi(input) tile; the general-depth variant
-% (pointer arrays + dynamic shared-mem offsets, arbitrary L); activations tanh/identity/sigmoid;
-% the batch-size dispatch; correctness ~1e-6 in a stable regime. The real .cu is the source of
-% truth (settling_kernel.cu), compiled via load(). Sources: docs/07, docs/09, docs/12 §4d/§4h.
+
+\subsection{Motivation: predictive-coding inference is launch-overhead-bound}
+
+The defining cost of PC, relative to a feedforward network, is the iterative inference phase: each
+training (or test) example requires $T$ settling steps before any weight update. On hardware optimised
+for the single dense matmul pattern of backprop, this iterative structure is a mismatch. Crucially,
+within a single settling step the work is not one large operation but a stream of \emph{small} ones ---
+a small matmul to form each prediction, an elementwise subtraction for each error, a transpose-matmul
+for the feedback term $W_k^{\!\top}\varepsilon_{k+1}$, the elementwise $\phi'$ gating, and the state
+update --- and these recur for every layer and every step. At MNIST widths (input $784$, hidden $256$)
+each of these operations is tiny, so the dominant cost is not arithmetic but the fixed overhead of
+launching a GPU kernel for each of them. A standard PyTorch settling step issues many such launches; we
+measure exactly $31$ kernel launches per step on our two-hidden-layer topology, independent of width,
+so that $T=20$ costs $620$ launches and $T=80$ costs $2480$. This is the ``framework tax'': the wall
+clock is set by launch count, not by floating-point work. It also explains the low GPU utilisation
+(roughly a quarter to a half) we observe for the PyTorch PC arm.
+
+The opportunity is precisely the parallel structure of one settling step. Within step $t$, all errors
+$\varepsilon_k$ depend only on the states at $t$ and can be computed together; then all free-state
+updates $\Delta s_k$ depend only on those errors and can be applied together. Only the chain of $T$
+steps, and the feedforward initialisation, are inherently sequential. A handwritten kernel can therefore
+fuse an entire step --- or the whole $T$-step loop for a batch --- into a single launch, holding the
+states resident in shared memory or registers across all $T$ steps and reading the weights from global
+memory once (persistent-kernel style). The number of launches collapses from hundreds or thousands to
+\emph{one}.
+
+\subsection{Novelty and honest scope}
+
+We audited the open-source landscape to place this contribution honestly. Across eleven open PC
+libraries there is no handwritten CUDA inference kernel: they are uniformly JAX/JIT-based or built on
+PyTorch autograd, and contain zero \texttt{.cu} files. We extended the audit to the closely related
+Equilibrium Propagation family (eighteen repositories) and found the same gap, the nearest neighbour
+being a per-step Triton kernel driven by a host-side loop. The defensible claim is therefore narrow and
+specific: \emph{the first handwritten fused CUDA settling kernel for predictive coding, to our
+knowledge}. We are equally explicit about what is \emph{not} novel. The fusion technique itself ---
+persistent, state-resident, single-launch kernels --- is established prior art from persistent RNNs and
+large-language-model megakernels, and the ``launch-overhead-dominated'' observation is a generic
+framework property, not our discovery. Our contribution is the transfer of that technique to PC plus a
+clean measurement of how much of PC's inference overhead is launch overhead. The most recent
+algorithmic neighbour, error-optimization PC \citep{goemaere2025epc}, addresses settling efficiency at
+the algorithm level rather than the kernel level and is cited as the contrasting approach. The kernel
+audit and verdict are documented in full as part of the project record.
+
+\subsection{The fused design and its three versions}
+
+The CUDA source is the single source of truth: a real \texttt{.cu} file compiled at first use via
+\texttt{torch.utils.cpp\_extension.load} (JIT, cached), not an inline string or a commented stub. The
+C++/CUDA extension exposes the kernel through a \texttt{pybind11} module in the same file. Three versions
+of the two-hidden-layer kernel evolved, each addressing a specific bottleneck revealed by measurement:
+
+\begin{description}
+  \item[v1 --- one block per sample.] Each thread block settles one sample, holding that sample's
+  states, errors, and activations in shared memory across all $T$ steps. This eliminates the launch
+  overhead and wins decisively at small batch. Its weakness is that every block re-reads the full
+  weight matrices from global memory each step, so at large batch it is bandwidth-bound: with one block
+  per sample the same weight element is fetched once per sample.
+  \item[v2 --- one block per tile of samples.] To recover the lost weight reuse --- the key optimisation
+  of any GEMM --- v2 assigns a tile of \texttt{TB}$=8$ samples to each block and reads each weight
+  element once, reusing it across the tile via an inner unrolled loop over the tile. The batch is
+  zero-padded to a multiple of the tile size, and $\phi(\text{input})$ is precomputed on the host. This
+  pushes the crossover with cuBLAS toward larger batches.
+  \item[v3 --- cached input activation.] Because the input is clamped, $\phi(\text{input})$ is constant
+  across all $T$ steps, yet v1/v2 re-read it each step. v3 caches the $\phi(\text{input})$ tile once in
+  shared memory (opting in to the larger per-block shared-memory budget on the target architecture),
+  eliminating the roughly $256$-fold redundant global reads of the input layer. This lifts the
+  mid-batch speed further and moves the break-even point with cuBLAS to around batch $1024$--$1500$.
+\end{description}
+
+The runtime dispatches by batch size: small batches take the per-sample path (v1), larger batches the
+tiled path (v2/v3). The activation is selected by an integer code ($0$ tanh, $1$ identity, $2$ sigmoid)
+matched between the Python wrapper and the device functions; the wrapper detects the activation from
+$\phi(0)$ and $\phi(1)$ and \emph{raises} on anything unrecognised. This guard was added after a real
+bug in which sigmoid silently fell through to tanh because the detector keyed only on tanh's signature
+--- precisely the kind of silent-wrong-answer failure the project is built to avoid.
+
+\subsection{The general-depth variant}
+
+The v1/v2/v3 kernels hardcode the two-hidden-layer topology for speed, which was a documented
+limitation. We removed it with a general-depth kernel that settles a PCN of \emph{arbitrary} depth $L$.
+The mechanism is to pass the weights, states, and biases not as fixed arguments but as arrays of device
+pointers (carried as 64-bit integer addresses), together with per-layer sizes and \emph{dynamically
+computed} shared-memory offsets, so a single kernel can index any number of layers laid out contiguously
+in shared memory. The update is the identical Jacobi step used by the PyTorch reference. The dispatch
+keeps the optimised two-hidden-layer path for that common case and routes any other depth to the
+general kernel. It is per-sample only --- the launch-bound small-batch regime the kernel targets --- so
+a register-blocked tiled GEMM for large batch at large depth remains open. A platform pitfall worth
+recording: on Windows \texttt{long} is $32$-bit, so the pointer arrays must be explicitly $64$-bit
+integers; using the wrong type produces a size/type mismatch. The kernel is correctness-verified across
+depths two through five (one to four hidden layers) crossed with tanh and sigmoid and two batch sizes
+--- sixteen configurations, all matching the PyTorch path to roughly $10^{-6}$.
+
+\subsection{Correctness before speed}
+
+Following good benchmarking discipline, correctness was established before any timing: the kernel must
+reproduce the PyTorch reference, and only then is it timed. Verification uses \texttt{allclose} at
+roughly $10^{-6}$ against \texttt{\_settle\_pytorch} across activations (tanh, identity, sigmoid), clamp
+on and off, and both dispatch paths. One subtlety is load-bearing: the comparison must be run in a
+\emph{stable} settling regime. An unstable configuration amplifies ordinary floating-point reordering
+differences between the two implementations into apparent ``errors'' that are really divergence of the
+dynamics, not a kernel bug. All timing measurements call \texttt{torch.cuda.synchronize()} before
+reading the clock, since CUDA execution is asynchronous and naive timing would measure launch latency
+rather than completion. The kernel is strictly optional: the default backend is PyTorch, fully
+functional, and the CUDA path is enabled only deliberately, by setting an environment flag and
+requesting \texttt{backend="cuda"}; without both, requesting the CUDA backend raises rather than
+silently falling back. The kernel speedups, the direct launch-count evidence, and the end-to-end
+integration are reported in \Cref{sec:exp-kernel}; the launch-count and speedup figures are presented
+there.
 
 \section{The Fair-Comparison Protocol}\label{sec:protocol}
-% Planned content: BPMLPRef clones the PCN init + reuses the identical forward fn (only the
-% learning rule differs); matched loss (BP-MSE-to-one-hot alongside BP-CE); per-method LR
-% selected on a validation split, reported on test; bootstrap CIs over >=3 seeds; PC's eta_x
-% and eta_w tuned jointly (stability frontier). Sources: docs/10 §3, docs/12 §4c.
 
-\section{Continual-Learning Setups}
-% Planned content: domain-IL (Permuted-MNIST, fixed 10-head); class-IL (Split-MNIST/
-% FashionMNIST, shared K-head); the GEM R-matrix and ACC/BWT/learn-acc; the Song-exact
-% alternating protocol (minibatch-level swap, batch 32, budget as an axis). Sources: docs/12
-% §4c/§4g, continual.py.
+The PC-vs-BP question is easy to answer badly. A casual comparison varies the learning rule \emph{and}
+a dozen incidental factors at once, and then attributes the difference to the learning rule. Our
+protocol exists to isolate the one variable of interest, following the fairness discipline of
+\citet{song2024prospective}.
 
-\section{Generative PC}
-% Planned content: orientation flip to [10,h,h,784] (label->image); masked/input-free settling
-% for generation and inpainting; residual energy at the predicted label as the anomaly score;
-% the ~1/sqrt(output-dim) state-LR scaling for stability. Sources: docs/12 §4f, generative.py.
+\subsection{Identical architecture, initialisation, and forward function}
+
+The backprop baseline, \texttt{BPMLPRef}, is constructed by \emph{building a PCN at the same seed and
+cloning its weights and biases} into trainable parameters. This guarantees, by construction rather than
+by careful matching, that PC and BP start from bit-identical initial weights. The baseline's forward
+pass reuses the \emph{same} layer chain as the PCN's feedforward initialisation
+($h \gets \phi(h)\,W_i^{\!\top} + b_i$), so the two arms compute the identical function of their
+parameters; only the learning rule differs. Both arms draw from the same MNIST pipeline. The backprop
+arm \emph{does} use autograd --- that is the entire point, it is the backprop learner --- and returns
+the same metrics dictionary schema as \texttt{train\_and\_eval}, so the search loop and comparison
+harness treat the two arms uniformly.
+
+\subsection{Matched loss --- the dominant confound}
+
+The single most important control is the loss function. PC clamps the output to a one-hot target, which
+makes its implicit objective a squared error to that one-hot vector. A backprop baseline trained with
+cross-entropy is therefore \emph{not} a like-for-like control: it differs from PC in both the learning
+rule and the objective. The protocol provides both BP arms: BP(MSE), which minimises the same squared
+error to the one-hot target that PC implicitly does and is the fair comparison, and BP(CE), the
+practical cross-entropy baseline reported for reference. The difference BP(CE) $-$ BP(MSE) then isolates
+the pure loss effect. This matters because, as \Cref{sec:exp-pcbp} reports, the loss function turns out
+to move the comparison far more than the learning rule does; an early, large apparent BP advantage was
+almost entirely the loss, not the rule.
+
+\subsection{Joint learning-rate tuning and the stability frontier}
+
+A second confound is asymmetric tuning. Sweeping only the weight learning rate $\eta_w$ while fixing the
+state learning rate $\eta_x$ systematically penalises PC, because the two interact through a stability
+frontier: at a given $\eta_x$, increasing $\eta_w$ past a point causes the settling dynamics to diverge,
+collapsing accuracy to chance; lowering $\eta_x$ restores stability and lets the same $\eta_w$ succeed.
+The protocol therefore tunes $\eta_x$ and $\eta_w$ \emph{jointly} for PC over a grid, and tunes each
+method's learning rate independently. A related guard, learned through a false-positive, is that the
+backprop baseline must itself actually be \emph{learning} before any comparison is meaningful: an
+untuned BP(MSE) that sits at chance can manufacture a spurious PC ``win'' that a learn-accuracy
+diagnostic immediately exposes.
+
+\subsection{Statistics: validation selection and bootstrap intervals}
+
+Learning rates are selected on a held-out validation split and reported on the test set, never selected
+on the test set. Every headline number is reported as a mean over at least three seeds with a bootstrap
+confidence interval, so that ``A beats B'' is a statement about non-overlapping intervals rather than
+single-run noise. We are explicit about the interval width used: following Song, the bootstrap routine
+reports $68\%$ (one-sigma) intervals, and we label them as such rather than implying $95\%$. The harness
+that implements bootstrap intervals and grid sweeps lives in the experiment protocol module and feeds
+the comparisons of \Cref{sec:exp-pcbp}.
+
+\section{Continual-Learning Setups}\label{sec:method-continual}
+
+Continual learning is where PC's prospective-configuration advantage is most often claimed, so it
+receives the most careful protocol design. All setups share the fair-comparison machinery above ---
+identical architecture and initialisation, matched loss, per-method tuning --- and add the canonical
+continual-learning metrics. We implement these in-house rather than via Avalanche
+\citep{lomonaco2021avalanche} to avoid dependency conflicts and keep the project genuinely
+from-scratch.
+
+\subsection{Metrics: the R-matrix, ACC, BWT, and learn-accuracy}
+
+After training task $i$ we evaluate on every task $j$, filling the accuracy matrix $R[i][j]$ in the
+sense of \citet{lopezpaz2017gem}. From it we read the average final accuracy
+$\mathrm{ACC} = \mathrm{mean}_j R[T-1][j]$ and the backward transfer
+$\mathrm{BWT} = \mathrm{mean}_{j<T-1}\big(R[T-1][j] - R[j][j]\big)$, where a negative BWT is forgetting.
+Critically, we also report \emph{learn-accuracy}, the mean of the diagonal $R[j][j]$ --- the accuracy on
+each task right after it is learned. This third metric exists to defeat the stability-plasticity
+confound: ``PC forgets less'' is only meaningful if PC also \emph{learned} each task comparably well. A
+method that learns each task poorly will trivially appear to forget little, and learn-accuracy makes
+that visible.
+
+\subsection{Domain-incremental: Permuted-MNIST}
+
+Permuted-MNIST is domain-incremental: a fixed ten-way head throughout, with each task applying a fixed
+random pixel permutation. Because the head and architecture never change, PC and BP run through an
+identical task stream with no head surgery. Task zero is the identity permutation (plain MNIST). The PC
+arm trains each task with the standard settle-then-update epoch; the BP arm with SGD on its chosen loss;
+both are evaluated on every task after each, capping the per-task test set because a PC evaluation is
+itself a settle and the full quadratic evaluation grid would be costly.
+
+\subsection{Class-incremental: Split-MNIST and Split-FashionMNIST}
+
+The class-incremental setups partition the labels into disjoint class sets that \emph{share} a single
+$K$-output head, with labels remapped to $0\ldots K-1$ so the shared head is forced to overwrite ---
+this interference is exactly the regime in which a PC advantage is claimed, unlike the milder
+domain-incremental case. Split-FashionMNIST (two disjoint five-class tasks) reproduces the shape of
+Song's setup; Split-MNIST (five disjoint two-class tasks) is the other standard variant. Both
+\citep{xiao2017fashionmnist, lecun1998mnist} run through the same harness.
+
+\subsection{The Song-exact alternating protocol}
+
+The setups above train each task to completion before moving on. Song's Figure 4 protocol is different
+and more demanding: two disjoint five-class FashionMNIST tasks share one five-output head and are
+trained by \emph{minibatch-level alternation} --- a few minibatch updates on the current task, then a
+switch, repeated. We implemented this faithfully: a network of four layers with thirty-two hidden units
+per layer, sigmoid activation, Xavier-normal initialisation, batch size thirty-two, switching every four
+updates. On the axes that define the protocol --- four layers, thirty-two hidden, sigmoid, Xavier, two
+disjoint five-class tasks, shared head, alternation --- this matches Song exactly, in contrast to our
+earlier sequential proxy.
+
+Two methodological points are essential to report honestly here, both surfaced by an adversarial
+three-lens review (literature fidelity, statistics, and alternative explanations) that corrected a
+premature reading of the protocol. First, a framing correction: Song's Figure 4e is \emph{not} a
+``PC is robust across learning rates'' claim --- that is a different figure. Figure 4e shows \emph{less
+catastrophic interference}, plotting the mean test error of both tasks against learning rate \emph{with
+the learning rate tuned separately per method}. We therefore test interference, not learning-rate
+robustness, and we tune the learning rate per method. Second, a faithfulness-versus-trainability
+tension: Song's exact budget of roughly eighty-four minibatch iterations leaves our network at chance.
+Rather than silently enlarge the budget, we make the training budget an explicit, controlled axis,
+sweeping from the exact eighty-four up to convergence. The reporting metrics distinguish the mean of
+both tasks' final accuracy (Song's Figure 4e metric) from the \emph{minimum} of the two --- the worse
+task being the true interference indicator, since a high mean with a low minimum is a sacrificed task,
+not balanced learning --- alongside learn-accuracy and retention. This protocol is also where the CUDA
+kernel earns its keep as a real engine: the small batch size of thirty-two is exactly the launch-bound
+regime the kernel targets, and the alternating study can be run on \texttt{backend="cuda"} with per-seed
+identical results (\Cref{sec:exp-song}).
+
+\section{Generative PC}\label{sec:method-generative}
+
+A distinctive property of predictive coding is that one mechanism --- settling --- can classify,
+generate, inpaint, and detect anomalies, depending only on what is clamped. We implement this without a
+new learning algorithm, by reusing the same PCN, settling, and weight update.
+
+\subsection{Orientation flip and generative training}
+
+The discriminative network maps image to label, and is therefore not a generative model of images:
+settling ``backward'' from a clamped label finds no learned image manifold and produces noise, as we
+verify honestly in \Cref{sec:exp-gen}. The fix is to flip the orientation. A generative PCN maps
+\emph{label to image}, with the topology $[10, h, h, 784]$. It is trained generatively --- the label is
+clamped at the input node, the image at the output node, the hidden states settle, and the same local
+Hebbian update is applied at equilibrium. Generation is then a forward pass from a clamped label;
+inpainting and anomaly detection are settling with different clamps. Crucially, no code in the settling
+or learning core changes: only the clamping pattern and the layer orientation differ.
+
+\subsection{Masked and input-free settling}
+
+The settling routine supports clamping the input fully (discriminative), leaving it free (generation),
+or masking it so that some pixels are clamped and the rest are free (inpainting). When the input is
+free, its update follows the same energy gradient, $-\phi'(s_0)\odot(W_0^{\!\top}\varepsilon_1)$, and a
+binary mask keeps the known pixels fixed while relaxing the unknown ones. The same per-sample residual
+energy $E = \tfrac12\sum_k\lVert\varepsilon_k\rVert^2$, evaluated at the predicted label, serves as an
+anomaly score: an input the model cannot generate leaves high residual energy. This is the same
+quantity that drives settling, repurposed as a detector.
+
+\subsection{The output-dimension stability scaling}
+
+A reusable stability finding emerged from the orientation flip and is worth recording as method. With a
+$784$-dimensional output, the hidden-layer settling gradient (which contains the term
+$\varepsilon_{\text{out}}\,W$) is roughly $\sqrt{784}\approx 28$ times larger than with a ten-dimensional
+label output. A state learning rate that is well-behaved for the discriminative model therefore diverges
+to NaN for the generative one. The state learning rate must be scaled down by roughly the square root of
+the output dimension to remain stable. This is a general consequence of how the output error enters the
+hidden-state gradient, not a tuning accident, and it generalises the choice of $\eta_x$ to other output
+sizes.
 
 \section{Optional Extensions: Incremental PC and EWC}
-% Planned content: iPC (update weights every settling step; the _ipc_step simultaneous update;
-% the ~lr/T sensitivity); EWC baseline (diagonal Fisher + quadratic anchor on the BP arm).
-% Sources: docs/12 §4h, learning.py, continual.py.
 
-\section{Reproducibility and Tooling}
-% Planned content: uv-only environment (cu126 pin), the 40-test offline suite, the autonomous
-% hyperparameter search as a thin layer over train_and_eval, the figure pipeline.
+Two further methods are implemented and validated, not merely sketched, to position vanilla SO-PC
+against close relatives.
+
+\subsection{Incremental PC}
+
+Incremental PC \citep{salvatori2024ipc} differs from standard SO-PC in \emph{when} the weights move.
+Rather than settling fully and updating once at equilibrium, it updates the states \emph{and} the
+weights after every inference step, from the same error vector. The update is simultaneous: the state
+step uses the current weights and the weight step uses the pre-step states, both derived from one error
+vector, so neither sees the other's change within a step. A clean correctness anchor pins this down ---
+with the weight learning rate set to zero, one incremental step reduces \emph{exactly} to one standard
+settling step, because incremental PC's state update is the SO update; it merely also moves the weights.
+
+The consequential property is sensitivity to the weight learning rate. Incremental PC applies $T$ weight
+updates per batch rather than one, so its effective weight learning rate is roughly $T$ times larger; at
+the standard $\eta_w$ it diverges to NaN, and it needs a correspondingly smaller rate (on the order of
+$\eta_w / T$) to be stable. The incremental path is restricted to the PyTorch backend by design: the
+fused CUDA kernel settles \emph{without} touching the weights, so it cannot express an update that writes
+the weights every step. The lesson --- incremental PC needs a $\sim T$-times smaller weight learning
+rate, after which it is competitive or better --- is reported quantitatively in \Cref{sec:exp-depth}.
+
+\subsection{Elastic Weight Consolidation}
+
+To locate the absolute continual-learning numbers against a dedicated method, we add Elastic Weight
+Consolidation \citep{kirkpatrick2017ewc} as a third class-incremental arm on the backprop side. After
+each task we store the diagonal empirical Fisher information (the mean squared gradient of the task loss
+at the converged parameters) and the optimal parameters, and later tasks carry the quadratic anchor
+$\tfrac{\lambda}{2}\sum_i F_i(\theta_i - \theta_i^\star)^2$ that penalises moving parameters the earlier
+task found important. EWC necessarily uses autograd (it is a backprop-side baseline, not PC) and slots
+into the existing class-incremental harness as a method choice. A caveat carried over from the
+fair-comparison work: in a regime too weak for the base learner to actually learn, EWC is correctly
+inert, because there is nothing to forget. Its measured effect appears in \Cref{sec:exp-depth}.
+
+\section{Reproducibility and Tooling}\label{sec:method-repro}
+
+Reproducibility is treated as part of the method, not an afterthought.
+
+\paragraph{Environment.} The project uses \texttt{uv} exclusively for environment management --- never
+\texttt{pip} --- so the dependency set is locked and reconstructable with a single command. The CUDA
+build is pinned to a toolkit-matched PyTorch (\texttt{cu126}) and requires nvcc with an MSVC toolchain
+on Windows; the kernel is compiled from the real \texttt{.cu} source via JIT loading and cached. The
+pure-PyTorch path requires no compilation at all, so the entire study --- minus the optional kernel ---
+runs with only \texttt{torch} and \texttt{torchvision} installed.
+
+\paragraph{Offline test suite.} A suite of forty tests validates the settling mathematics, the local
+update, the energy formula, the generative and masked-settling paths, and the harness wiring. The tests
+are hermetic and offline: they use small synthetic tensors with no MNIST download and run CPU-only, so
+correctness can be re-verified anywhere without a GPU or network access. Earlier weak assertions (for
+example, a training-loop test that only compared the last epoch to the first rather than checking the
+trend) were tightened in the course of the project.
+
+\paragraph{Autonomous hyperparameter search.} The Phase-4 search is a thin layer over
+\texttt{train\_and\_eval}: grid and random search (with an optional Optuna backend) propose a config,
+call the interface, and log the metrics, with no rewrite of the core. The single stable signature is
+what makes the search ``almost free'' in engineering terms. As a sanity check, an autonomous search run
+rediscovers the $\eta_x \leftrightarrow \eta_w$ stability interaction described in
+\Cref{sec:protocol} --- a useful confirmation that the protocol's central confound is real and findable
+without prior knowledge.
+
+\paragraph{Figure and artefact pipeline.} Every quantitative claim is backed by a stored artefact:
+benchmark JSON for the kernel timings and launch counts, per-seed result files for the alternating
+sweep, and the figures of \Cref{ch:experiments}. Per-seed values are retained (not just aggregates) so
+that the spread behind every interval can be inspected, which is essential given that several of the
+study's headline findings are null and rest on the \emph{absence} of a separation rather than its
+presence.

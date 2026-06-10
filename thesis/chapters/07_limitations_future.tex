@@ -1,15 +1,360 @@
 \chapter{Limitations and Future Work}\label{ch:limitations}
 
+A study whose headline contribution is methodological honesty owes the reader an
+equally honest account of its own boundaries. The findings reported in
+\Cref{ch:experiments} are, for the most part, deliberately sober: at the scale we
+study, a fairly tuned predictive-coding (PC) network is statistically
+indistinguishable from a matched backpropagation (BP) baseline, and our systems
+contribution---a fused CUDA settling kernel---wins only in a delimited batch regime.
+None of these results should be over-read. This chapter therefore does two things.
+First, it states precisely what our claims do \emph{not} entail: the scale at which
+they hold, the seed budgets behind the confidence intervals, the architectural
+regimes in which the kernel helps or hurts, and the exact provenance of the
+``first-for-PC'' novelty claim. Second, it lays out the concrete extensions that
+would either widen the scope of the present claims or test the hypotheses that this
+study could only flank rather than resolve. The intent throughout is to leave a
+reviewer with no surprises: every caveat that an adversarial reader might raise is
+raised here first, by us.
+
 \section{Limitations}
-% Planned content (honest, from docs/05 §5 updated): MNIST/FashionMNIST scale; the null does
-% not globally refute Song (scale + seed budget differ even in the exact replication); the
-% kernel's large-batch tiled path is still depth-2 (per-sample path is general-depth); the
-% "first for PC" claim carries the usual "to our knowledge" caveat (bounded by the PC + EP
-% audit); generative output is class prototypes, not diverse samples; uniform noise is an easy
-% OOD; precision schedules reserved; iPC is LR-sensitive.
+
+We group the limitations into four families: those of \emph{scientific scope} (what
+the null result does and does not establish), those of \emph{the systems
+contribution} (where the kernel wins and where it does not, and how far the novelty
+claim reaches), those of \emph{the capability demonstrations} (the generative model,
+the anomaly task, the incremental-PC variant), and those of \emph{experimental
+reach} (scale and architecture). We treat each in turn.
+
+\subsection{Scope of the scientific findings}
+
+\subsubsection{The null result is scale- and budget-bounded, not universal}
+
+The central empirical claim of this thesis is a \emph{null}: across bulk accuracy,
+noise robustness, sample efficiency, domain-incremental learning, and
+class-incremental learning, a loss-matched and per-method-tuned PC network shows no
+advantage over BP that exceeds our measured noise (\Cref{sec:exp-pcbp}). It is
+essential to state what this claim is \emph{not}. It is not a proof that PC can
+never differ from BP. It is the considerably weaker---and we believe defensible---
+statement that \emph{at MNIST and FashionMNIST scale, with a fairly tuned baseline
+and a matched loss function, no PC advantage exceeds the seed-to-seed noise}. The
+distinction matters because the literature reports advantages in regimes we did not
+reach, and the theory \citep{innocenti2026limits} locates PC's distinctive behaviour
+precisely in regimes (depth, width) that our $\lbrack 784, 256, 256, 10\rbrack$
+network does not probe and that the theory itself predicts to become unstable as
+they scale. Our result is a clean data point at one scale, not a refutation of the
+field.
+
+\subsubsection{The null does not globally refute Song et al.}
+
+This caveat deserves its own treatment because it is the most likely point of
+misreading. Our class-incremental experiments (\Cref{sec:exp-pcbp}) follow the
+\emph{regime} studied by \citet{song2024prospective}, and \Cref{sec:exp-song}
+reports an architecture-faithful replication of their \emph{exact} alternating
+Split-FashionMNIST protocol: a four-layer $32$--$32$ sigmoid network with
+Xavier-normal initialisation, two disjoint five-class tasks sharing one five-output
+head, trained by alternating at the minibatch level. On the axes Song specifies
+(depth, hidden width, activation, initialisation, task split, shared head,
+alternation) we match the published method. Even so, two honest gaps remain. First,
+the \emph{scale and seed budget} differ: we ran $n=10$ seeds and reported $68\%$
+($1\sigma$) bootstrap intervals, whereas the original study operates at a different
+scale with its own seed budget; a $1\sigma$ null at one scale is not a $95\%$ null
+at another. Second, the original $84$-iteration training budget leaves every method
+at chance in our hands---a faithfulness-versus-trainability tension that we resolved
+by treating the training budget as a controlled axis from $84$ iterations to
+convergence, rather than by silently enlarging it. Within that swept budget we find
+no PC-versus-BP(MSE) difference exceeding $1\sigma$ at \emph{any} point, and raising
+the seed count from five to ten did not promote the directional trend (PC slower
+early, marginally ahead at convergence) to significance. The honest reading is
+therefore: \emph{our most faithful replication agrees with our parity verdict rather
+than overturning it}, while the residual differences in scale and budget mean we
+cannot claim to have reproduced or refuted the original finding in its own terms.
+
+\subsubsection{A corrected framing, not an original interpretation}
+
+The interpretation we report in \Cref{sec:exp-song} is itself the product of an
+adversarial three-lens review (literature faithfulness, statistics,
+alternative-explanations) that caught an earlier draft misattributing a
+learning-rate-robustness claim to \citet{song2024prospective}'s interference figure.
+The original figure is a \emph{less-interference} claim with the learning rate
+optimised per method, not an LR-robustness claim. We mention this here because it is
+a limitation of method as much as a strength: it demonstrates that, absent the
+adversarial check, we would have compared against the wrong baseline metric. The
+safeguard is reusable and we recommend it, but its necessity is also a reminder that
+single-pass readings of the literature in this field are error-prone, our own
+included.
+
+\subsubsection{The confound checklist explains, but does not exhaust}
+
+We identify three confounds that manufacture spurious PC advantages in naive
+comparisons (\Cref{sec:exp-pcbp}): the loss function (cross-entropy versus MSE, worth
+$+5.9$ percentage points of bulk accuracy on its own), the
+stability--plasticity trade-off in forgetting metrics, and an untuned baseline
+learning rate. This list is offered as an explanation for the literature's
+inconsistency, not as a closed taxonomy. Other confounds---initialisation schemes,
+data ordering, the choice of optimiser for the baseline, the number of settling
+steps $T$ relative to network depth---could equally distort a comparison, and we
+controlled rather than exhaustively ablated several of them. The checklist is a
+practical aid, not a completeness theorem.
+
+\subsection{Limitations of the systems contribution}
+
+\subsubsection{The kernel wins only in the small/medium-batch regime}
+
+The fused settling kernel (\Cref{sec:kernel}, \Cref{sec:exp-kernel}) is honestly a
+\emph{regime-specific} accelerator, not a general-purpose replacement for the
+PyTorch backend. PC inference at MNIST scale is launch-overhead-bound: the PyTorch
+backend issues $31$ kernel launches per settling step and runs at roughly
+$0.5$\,ms/step independent of batch size, leaving the GPU $25$--$49\%$ utilised.
+Fusing the entire $T$-step loop into a single launch removes that overhead and
+yields $3.2\times$ at batch $64$. But the same property that makes the fused design
+fast at small batch---holding the layer states resident on-chip across all $T$
+steps---is architecturally opposed to the register-blocked tiling that a
+cuBLAS-class GEMM needs: residency consumes precisely the register and shared-memory
+budget a fast matrix multiply requires. Consequently, batch-tiling and
+input-activation caching push the crossover only to roughly $1024$--$1500$, and at
+batch $\geq 2048$, where \emph{compute} rather than launch overhead dominates, cuBLAS
+wins and the correct backend is \texttt{pytorch}. We report this not as ``not yet
+optimised'' but as a genuine systems finding---the fused-resident and tiled-GEMM
+designs are in tension---yet it is unambiguously a limitation on the kernel's
+applicability.
+
+\subsubsection{The large-batch tiled path is still depth-two}
+
+The kernel now exists in two forms with different generality. The per-sample path
+(one thread block per sample) has been generalised to \emph{arbitrary depth}: the
+per-layer weights, states, and biases are passed as device-pointer arrays with
+shared-memory offsets computed at launch, and the result is validated against the
+PyTorch equilibrium to roughly $10^{-6}$ across depths two through five (one to four
+hidden layers), for tanh and sigmoid activations and batches of $32$ and $256$. The
+batch-tiled path (the one that buys large-batch weight reuse), however, remains
+specialised to the two-hidden-layer topology. The general-depth kernel is therefore
+restricted to the small-batch, launch-bound regime---which is the regime in which it
+wins, so the restriction is not crippling---but a register-blocked tiled GEMM for the
+large-batch \emph{and} deep regime is not implemented. Lifting the depth
+specialisation on the tiled path is reserved future work.
+
+\subsubsection{``First for PC'' carries the to-our-knowledge caveat}
+
+The novelty claim is stated carefully and we restate its exact scope here. To our
+knowledge, this is the first hand-written, fused, single-launch CUDA kernel that runs
+the entire $T$-step PC settling loop with layer states held resident on-chip across
+steps. This is supported by a direct source audit of eleven open PC libraries (PCX,
+JPC, ngc-learn, $\mu$PC, PRECO, Torch2PC, pypc, pybrid, ePC, and Song's own
+repositories), none of which ship a custom CUDA settling kernel---they are uniformly
+JAX/JIT or PyTorch-autograd---and by an additional audit of the
+Equilibrium-Propagation family, the closest algorithmic relative, which likewise
+ships no hand-written CUDA settling kernel (the one EP repository with hand-written
+GPU kernels uses per-step elementwise Triton kernels with the settling iteration on
+the host). Two qualifications are mandatory. First, the \emph{technique}---a fused,
+single-launch, states-resident persistent kernel---is established prior art, dating
+to cuDNN's persistent RNN and Baidu's \texttt{persistent-rnn}
+\citep{diamos2016persistent} and re-applied in recent LLM megakernels; our
+contribution is its transfer to, and measurement on, the PC settling loop, not the
+invention of the pattern. The closest fixed-point analogue, deep equilibrium models
+\citep{bai2019deq}, and the closest PC-side work, error-optimisation PC
+\citep{goemaere2025epc}, attack related goals without a custom kernel and are cited
+and delimited accordingly. Second, a negative existence claim over unindexed or
+industrial code cannot be proved; the ``to our knowledge'' caveat is therefore not
+a rhetorical hedge but a literal statement of the evidence's limit. The observation
+that PC inference is launch-overhead-bound is itself a generic ``framework tax'' and
+is \emph{not} claimed as a contribution.
+
+\subsection{Limitations of the capability demonstrations}
+
+\subsubsection{Generative output is class prototypes, not diverse samples}
+
+The generative PC of \Cref{sec:exp-gen} genuinely recovers the ``one mechanism, many
+tasks'' property: the same settling rule classifies, generates, inpaints, and detects
+anomalies, depending only on what is clamped. But the generative model maps a
+one-hot label to an image, so its ten possible inputs produce at most ten distinct
+outputs: recognisable \emph{per-class prototypes} (effectively the per-class mean),
+not a diverse sample distribution. Inpainting is correspondingly prototype-driven and
+blurry rather than pixel-sharp. Producing diverse samples would require a continuous
+latent with a prior (a VAE-like construction), which we did not build. The
+demonstration establishes the qualitative capability, not generative fidelity.
+
+\subsubsection{Uniform noise is an easy out-of-distribution test}
+
+The anomaly-detection result---an AUC of $1.0$ separating in-distribution MNIST
+(residual energy $5.1$) from uniform-noise inputs (energy $94.5$)---is real but must
+not be over-read. Uniform noise is an \emph{easy} out-of-distribution (OOD) signal:
+it lies far from any plausible image manifold, so perfect separation is a weak test
+of the detector. A genuinely informative evaluation would use \emph{near}-OOD inputs,
+such as FashionMNIST presented to an MNIST-trained model, or rotated digits, where
+the OOD distribution shares low-level statistics with the training data. We report
+the easy result honestly and flag the harder test as the meaningful one.
+
+\subsubsection{Incremental PC is learning-rate sensitive}
+
+The incremental-PC (iPC) variant \citep{salvatori2024ipc} of \Cref{sec:exp-pcbp}
+interleaves a weight update with every settling step rather than updating once at
+equilibrium. Because it applies $T$ weight updates per minibatch, its effective
+weight learning rate is roughly $T$ times larger, and at the standard rate it
+diverges. At a rate scaled down by approximately $1/T$ it is stable and, in a
+fast-training regime, outperforms standard PC ($74.3\%$ versus $63.1\%$ on a short
+MNIST run). The capability is therefore real but conditional: iPC trades robustness
+to the learning rate for faster per-step learning, and a practitioner who omits the
+$\sim\!\eta_w/T$ rescaling will simply see it diverge. We report it as an optional
+extension with this sensitivity made explicit, not as a drop-in improvement.
+
+\subsubsection{Precision schedules remain reserved}
+
+Throughout this work the precision (inverse-variance) weighting $\Pi$ of the
+prediction errors is fixed to the identity, which reduces the energy
+$E = \tfrac12 \sum_k \lVert \varepsilon_k \rVert^2$ to a plain sum of squared
+errors---the modern default of PCX and JPC \citep{pinchetti2024pcx, millidge2024jpc}.
+Learnable or scheduled precisions are a documented dimension of the PC objective and
+a plausible lever on both the depth-scaling problem (precision-weighted gradients are
+one of the proposed fixes) and the energy imbalance across layers, but we did not
+implement them. The ``precision schedule'' search dimension is therefore reserved,
+and any claim we make is implicitly conditioned on $\Pi = I$.
+
+\subsection{Limitations of experimental reach}
+
+\subsubsection{Scale and the gap to Transformers}
+
+The entire study lives at MNIST and FashionMNIST scale with a vanilla
+state-optimisation PC network. We do not demonstrate PC on larger datasets, on
+convolutional or attention architectures, or at anything approaching the scale at
+which the field's open questions (\Cref{ch:related}) actually bite. The
+\emph{scale gap}---PC has not been shown to work at Transformer scale---is untouched
+here and is frontier-laboratory work; our contribution is a clean, well-characterised
+building block, not a scaling result.
+
+\subsubsection{Depth scaling is sidestepped, not solved}
+
+Closely related, the depth-scaling failure of PC---the observation that deeper
+PC-trained networks are often \emph{worse}, the opposite of BP, driven by an
+exponential signal-decay problem \citep{goemaere2025epc}---is avoided at our depth
+rather than addressed. Our networks are shallow enough that signal decay does not
+dominate, and while the general-depth kernel validates correctness up to five layers,
+correctness is not the same as trainability. We neither reproduce the depth-scaling
+failure systematically nor evaluate the proposed fixes (error optimisation,
+$\mu$P-style parametrisation, forward-anchored gradient corrections of
+\citet{qi2025settling}). The problem is acknowledged and deferred, not resolved.
+
+\subsubsection{Single optimiser regime and offline evaluation}
+
+Finally, the comparisons use a single optimisation regime (plain local updates for PC,
+SGD-style updates for the matched BP baseline) and an offline, batch-trained
+evaluation. We do not study the strict online (batch-size-one) regime that is among
+PC's most cited putative niches, nor optimiser interactions (momentum, adaptive
+methods) that could shift the parity verdict in either direction. All experiments are
+implemented in pure PyTorch with hand-derived updates verified against autograd as an
+external oracle, and the full suite comprises forty offline tests; this gives
+correctness confidence but is not a substitute for the broader sweep just described.
 
 \section{Future Work}
-% Planned content: depth-scaling and the signal-decay problem (ePC); scale toward larger
-% datasets/Transformers; an Equilibrium-Propagation comparison arm; harder near-OOD anomaly
-% (FashionMNIST vs MNIST, rotations); a diverse generative latent (VAE-like); an AOT kernel
-% build + a register-blocked tiled GEMM for the large-batch deep regime; Nsight Compute report.
+
+The limitations above map naturally onto a future-work programme. We organise it by
+the same two threads as the thesis---the systems contribution and the scientific
+contribution---and add the capability extensions that the generative results invite.
+Where a direction is squarely frontier-laboratory work we say so; where a solo,
+small-scale project can make a real dent we say that too.
+
+\subsection{Extending the systems contribution}
+
+\subsubsection{A register-blocked tiled GEMM and an ahead-of-time build}
+
+The clearest engineering next step is to attack the large-batch regime directly.
+The kernel currently loses to cuBLAS at batch $\geq 2048$ because its in-kernel
+matrix multiply uses scalar fused-multiply-adds with no register blocking and reaches
+only a fraction of the FLOP peak. A register-blocked, shared-memory-tiled GEMM---in
+effect reimplementing the core of cuBLAS inside the fused kernel---would, if
+combined with a careful budgeting of the residency-versus-tiling trade-off described
+above, narrow or close the large-batch gap. This is a substantial undertaking and
+arguably of questionable return given that cuBLAS already serves that regime well,
+but it is the principled way to lift the fused design beyond its current ceiling. In
+parallel, replacing the current just-in-time \texttt{torch.utils.cpp\_extension.load}
+build with an ahead-of-time (AOT) \texttt{setuptools}/\texttt{CUDAExtension} build
+against the ABI-stable LibTorch API would improve reproducibility and packaging.
+Lifting the batch-tiled path to arbitrary depth (it remains depth-two) is the
+companion task.
+
+\subsubsection{An Nsight Compute profile to corroborate the launch-overhead account}
+
+Our mechanistic evidence that launch overhead is the addressed bottleneck rests on a
+profiler launch count (the PyTorch backend issues $620$, $1240$, or $2480$ launches
+for $T = 20, 40, 80$ versus the fused kernel's single launch). A full Nsight Compute
+report---occupancy, achieved bandwidth, memory-versus-compute roofline placement,
+warp-stall reasons---would harden this account against the ``solver-view'' objection
+raised by ODE-solver-based libraries such as JPC and ePC, demonstrating at the
+hardware-counter level that the PyTorch path is launch-bound and the fused path is
+not. We note the launch-count figure is already presented in \Cref{sec:exp-kernel};
+the Nsight report is the natural deepening.
+
+\subsection{Extending the scientific contribution}
+
+\subsubsection{An Equilibrium-Propagation comparison arm}
+
+Equilibrium Propagation (EP) \citep{scellier2017ep, laborieux2021ep} is the closest
+algorithmic relative of PC: both relax to an equilibrium and derive a local weight
+update from it. We audited EP for the novelty claim but did not implement it as a
+comparison arm. Adding an EP arm under the same fair-comparison protocol---matched
+architecture, initialisation, data, and loss; per-method tuning; bootstrap
+confidence intervals---would situate our PC-versus-BP parity verdict within the
+broader energy-based-learning family and test whether EP, too, collapses to BP-like
+behaviour at this scale or carves out a distinct regime.
+
+\subsubsection{Probing where PC and BP diverge}
+
+The deepest open question we can only flank is the PC$\,\approx\,$BP equivalence
+puzzle: the theory \citep{innocenti2026limits} holds that the width- and
+depth-stable feature-learning parametrisations of PC coincide with those of BP, and
+that PC's distinctive regime becomes unstable as it scales---leaving open what PC is
+ultimately \emph{for}. A small project cannot resolve this, but it can contribute
+data points. Concretely, one could test whether the PC and BP \emph{solutions}
+themselves diverge---do they reach different minima, exhibit different loss-landscape
+curvature \citep{zahid2023curvature}, or differ in robustness---even when their test
+accuracies match. A measurable divergence in solution geometry, despite accuracy
+parity, would be a genuine contribution to the question, and our matched-init harness
+(the BP baseline clones the PC initialisation) is well suited to it.
+
+\subsubsection{Harder near-OOD and continual-learning baselines}
+
+On the empirical side, the anomaly task should move from easy uniform-noise OOD to
+near-OOD (FashionMNIST against an MNIST-trained model, rotated digits), which would
+turn the AUC $1.0$ result into an informative measurement. On the
+continual-learning side, our EWC baseline \citep{kirkpatrick2017ewc} already behaves
+as a positive control---it forgets less than the matched BP, with backward transfer
+of $-41.1\%$ versus $-45.7\%$---and the natural next step is to add a replay-based
+baseline such as gradient episodic memory \citep{lopezpaz2017gem} and a joint-training
+upper bound, ideally standardised through a continual-learning framework such as
+Avalanche \citep{lomonaco2021avalanche}, to locate the absolute forgetting numbers
+rather than only comparing PC against BP.
+
+\subsection{Extending the capability demonstrations}
+
+\subsubsection{A diverse generative latent}
+
+To move the generative PC from class prototypes to diverse samples, the one-hot label
+input must be replaced by a continuous latent with a prior, settled as a free
+variable under a generative training objective in the spirit of the original
+predictive-coding model \citep{rao1999predictive}. This is a distinct
+model variant rather than a tuning change, and it is the most direct route to a
+generative PC that produces sample \emph{diversity} and supports the sharper
+inpainting that prototype-driven reconstruction cannot.
+
+\subsubsection{Depth-scaling diagnostics and proposed fixes at small scale}
+
+Finally, although solving the depth-scaling problem is frontier work, a small project
+can \emph{characterise} it precisely. The concrete plan is to reproduce the
+``deeper-is-worse'' effect on MNIST across two, four, and eight hidden layers, measure
+and plot the per-layer energy and gradient distribution to expose the signal-decay
+imbalance, and then reimplement one proposed fix---error optimisation
+\citep{goemaere2025epc} or a $\mu$P-style parametrisation---on the small network to
+show whether it flattens the imbalance. This would convert the depth-scaling
+limitation from an acknowledged gap into a clean empirical study, and it is the
+single most valuable scientific extension that remains within reach of the present
+codebase.
+
+\medskip
+
+Taken together, these directions do not change the thesis's sober verdict; they
+sharpen its edges. The systems extensions would widen the kernel's regime of
+usefulness without retracting the architectural trade-off we identified; the
+scientific extensions would test the parity verdict against a wider family of methods
+and probe the one question---where, if anywhere, PC genuinely diverges from BP---that
+this study could only frame, not answer. That this list is long is itself in keeping
+with the project's stance: an honest baseline is valuable precisely because it makes
+the next questions clear.

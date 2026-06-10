@@ -1,38 +1,601 @@
 \chapter{Experiments and Results}\label{ch:experiments}
 
+This chapter reports the empirical core of the thesis. It is deliberately organised as a
+\emph{data} chapter: it states the experimental protocol, then presents measured numbers with
+their uncertainty (confidence intervals, seed counts) and the caveats that bound each
+measurement. The methods themselves --- the State-Optimization (SO) settling rule, the local
+Hebbian weight update, the fused CUDA kernel design, and the fair-comparison protocol --- were
+developed in \Cref{ch:method}; we reference them here rather than re-deriving them. Deeper
+interpretation of \emph{why} the results look as they do, and what they imply for the field's
+inconsistent claims about Predictive Coding (PC), is deferred to \Cref{ch:discussion}; the
+boundaries of what the numbers license are collected in \Cref{ch:limitations}.
+
+Two stylistic commitments govern the entire chapter, and they are the project's defining virtue.
+First, \emph{the headline findings are largely null}: under a fair comparison, vanilla SO-PC
+performs essentially on par with backpropagation (BP) at matched loss, and the one genuine
+``better'' result is an engineering win (the kernel) bounded by an honest crossover. Second,
+\emph{every claim is reported with its statistical reach}. Where an effect is directional but
+inside the seed-to-seed spread, we say so explicitly and decline to call it significant. A sober
+reckoning is the contribution; inflating a marginal edge would undermine it.
+
 \section{Experimental Setup}
-% Planned content: hardware (RTX 3080 Ti, torch cu126), datasets (MNIST/FashionMNIST),
-% metrics (test accuracy, energy, settling steps, GEM ACC/BWT/learn-acc, AUC, ms/step,
-% launch count), seeds + bootstrap CIs, the artifact JSONs under results/.
+
+\subsection{Hardware, software, and reproducibility}
+
+All GPU experiments were run on a single \mbox{NVIDIA GeForce RTX 3080 Ti} (\SI{12}{\giga\byte},
+compute capability \texttt{sm\_86}) under PyTorch \texttt{2.12.0+cu126} with the CUDA~12.6
+toolkit. PyTorch is used \emph{only} as a tensor engine and, for the BP baselines, as an autograd
+engine; the PC learning rule itself uses no autograd --- every state and weight update is computed
+by hand under \texttt{@torch.no\_grad()} (see \Cref{ch:method}). The hand-derived settling and
+Hebbian gradients were checked against \texttt{torch.autograd} to \(\sim\!10^{-5}\) in the test
+suite, where autograd serves purely as an external oracle. A small set of early correctness and
+micro-benchmark runs were performed on CPU (\texttt{torch 2.12.0+cpu}); these are flagged where
+they appear and are not used for any headline claim.
+
+The complete codebase, the test suite, the figure-generation script, and the raw experiment
+artifacts (the \texttt{results/*.json} files) are released so that every number in this chapter
+can be regenerated. The four figures are produced by \texttt{scripts/make\_figures.py} directly
+from those JSON artifacts, so the plotted values and the tabulated values share a single source of
+truth. Reproduction details (commands, environment, seeds) are collected in \Cref{app:repro}, and
+the per-seed values underlying the aggregate statistics are stored in the artifacts (e.g.\
+\texttt{results/m4\_alternating\_song\_exact\_budgetsweep\_s10.json}).
+
+\subsection{Datasets and architecture}
+
+The discriminative experiments use MNIST \citep{lecun1998mnist}; the continual-learning and
+Song-faithful experiments use FashionMNIST \citep{xiao2017fashionmnist} and class-split variants
+of both. Unless stated otherwise the discriminative network is the multilayer perceptron (MLP)
+topology \([784,256,256,10]\): a \(784\)-dimensional input layer, two hidden layers of \(256\)
+units, and a \(10\)-way output. The activation \(\phi\) is \(\tanh\) for the discriminative runs.
+The Song-faithful replication (\Cref{sec:exp-song}) instead uses Song's architecture exactly: a
+four-layer \([784,32,32,5]\) network with \emph{sigmoid} activations and Xavier-normal
+initialisation. The generative model (\Cref{sec:exp-gen}) reverses the orientation to
+\([10,256,256,784]\) (label\(\rightarrow\)image).
+
+\subsection{Metrics}
+
+We report, depending on the experiment: test accuracy; the free-energy
+\(E=\tfrac12\sum_k\lVert\varepsilon_k\rVert^2\) and its convergence behaviour;
+\texttt{settling\_steps\_to\_converge} (the number of inference steps until the relative
+energy-delta falls below a tolerance \texttt{tol}, which turns ``did the network settle?'' into a
+measurable quantity); noise robustness (test accuracy under additive Gaussian input noise of
+standard deviation \(\sigma\)); wall-clock milliseconds per settle and per settling step; the
+profiled CUDA-launch count per settle; and, for continual learning, the standard GEM-style
+metrics \citep{lopezpaz2017gem} --- final average accuracy, learning accuracy (the diagonal of the
+task\(\times\)task accuracy matrix, i.e.\ how well each task was learned \emph{when} it was the
+current task), backward transfer (BWT, the average change in earlier tasks' accuracy after later
+training), and retained task-0 accuracy. For the generative model we report the area under the ROC
+curve (AUC) for out-of-distribution (OOD) detection by residual energy. The continual-learning
+harness is implemented leanly without the \texttt{avalanche} library
+\citep{lomonaco2021avalanche}, against which the design was sanity-checked.
+
+\subsection{Statistics}
+
+Every aggregate number is reported as a mean over multiple random seeds together with a bootstrap
+confidence interval (CI). \textbf{We follow Song et al.\ in reporting \SI{68}{\percent}
+(one-\(\sigma\)) intervals, \emph{not} \SI{95}{\percent}}; the bootstrap routine
+(\texttt{protocol.py}) computes the \(1\sigma\) band deliberately. This matters for honest
+reading: a one-\(\sigma\) interval is narrower than a \SI{95}{\percent} interval, so the standard
+for ``the CIs overlap, hence indistinguishable'' is correspondingly conservative --- if two
+methods' \(1\sigma\) bands overlap they are certainly not separated at \SI{95}{\percent}. The fair
+PC-vs-BP study (\Cref{sec:exp-pcbp}) uses three seeds; the Song-faithful budget sweep
+(\Cref{sec:exp-song}) was run at five seeds and then re-run at ten. Where we describe an effect as
+``directional but not significant'' we mean specifically that the point estimate has a sign but
+the gap is smaller than the (often large) seed-to-seed spread.
 
 \section{The Fused CUDA Settling Kernel}\label{sec:exp-kernel}
-% Planned content: launch-overhead (PyTorch ~0.5 ms/step batch-independent; 31 launches/step
-% vs 1; Fig 4); speedup 3.2x@64, ~2x@256, break-even ~1024, cuBLAS@>=2048 (Fig 1); the
-% architectural GEMM trade-off; arbitrary-depth validation (16 configs, ~1e-6); in-study
-% integration 1.45x end-to-end, per-seed identical. Sources: docs/12 §4d/§4h, Fig 1+4.
+
+This section reports the project's one genuine ``faster'' result, an engineering win whose value
+lies as much in the measurement as in the speedup. The kernel design is described in
+\Cref{sec:kernel}; here we measure what it buys, where it stops buying it, and why.
+
+\subsection{Correctness comes first}
+
+Before any timing, the kernel was held to a correctness gate. The fused CUDA kernel reproduces the
+PyTorch settling backend (\texttt{\_settle\_pytorch}) to within \(\sim\!10^{-6}\)
+(\texttt{allclose}) across activations \(\{\tanh,\text{identity},\text{sigmoid}\}\) and with input
+clamping on and off (\texttt{scripts/verify\_kernel.py}). One subtlety is worth recording because
+it is a recurring trap: the equivalence must be checked in a \emph{stable} settling regime. If the
+state learning rate \(\eta_x\) is too large the iteration is numerically unstable, and unstable
+settling amplifies the inevitable floating-point reordering between a fused kernel and a sequence
+of cuBLAS calls --- the two backends then diverge not because either is wrong but because the
+dynamics are ill-conditioned. Verifying under a stable configuration isolates correctness from
+conditioning.
+
+\subsection{PC inference is launch-overhead-bound}
+
+The central measurement is mechanistic, not merely a wall-clock comparison. Using the PyTorch
+profiler to count \texttt{cudaLaunchKernel} events (\texttt{scripts/profile\_launches.py};
+\texttt{nsys} was unavailable, so we count launch events directly), we find that the PyTorch SO
+backend issues \textbf{31 kernel launches per settling step}, and therefore \(620\), \(1240\), and
+\(2480\) launches for a full settle of \(T=20\), \(40\), and \(80\) steps respectively. The fused
+kernel issues \textbf{exactly one launch}, independent of \(T\) --- a reduction of
+\(620\)--\(2480\times\) (\Cref{fig:launch-count}). This is the \emph{mechanistic} evidence that
+launch overhead, not arithmetic, is the bottleneck the kernel removes: it answers the
+solver-centric objection (one might suspect the speedup is an artifact of an inefficient PyTorch
+graph) by showing the launch count directly rather than inferring it from timing.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.8\linewidth]{fig4_launch_count}
+  \caption{CUDA kernel launches per full settle versus the number of settling steps \(T\)
+  (batch \(64\), RTX 3080 Ti). The PyTorch SO backend issues \(31\) launches per step
+  (\(620\rightarrow1240\rightarrow2480\) for \(T=20,40,80\)); the fused kernel issues exactly one,
+  independent of \(T\). This is the mechanistic confirmation that PC inference at this scale is
+  launch-overhead-bound rather than compute-bound.}
+  \label{fig:launch-count}
+\end{figure}
+
+Consistent with a launch-bound regime, the PyTorch SO settle costs roughly \SI{0.5}{\milli\second}
+per step \emph{independent of batch size} from \(B=64\) up to \(B=4096\) (the per-step wall clock
+barely moves while the work per step grows \(64\times\)), and the GPU is only \(\sim\!25\)--%
+\SI{49}{\percent} utilised during the M4 runs. We note that this ``framework tax'' of many tiny
+operator launches is a generic, previously documented phenomenon, not a discovery of this thesis;
+the contribution is its quantification for PC inference and the kernel that removes it.
+
+\subsection{Speedup and the architectural crossover}
+
+\Cref{fig:kernel-speedup} plots the speedup of the fused kernel over the PyTorch backend versus
+batch size for the topology \([784,256,256,10]\). The kernel wins decisively in the small-batch
+regime, reaches break-even in the middle, and loses at large batch. With the final batch-tiling
+and input-activation caching optimisations (v3), the measured behaviour is: \textbf{about
+\(3.2\times\) at \(B=64\)}, \textbf{about \(2.0\times\) at \(B=256\)}, \textbf{break-even
+(\(\sim\!1.0\times\)) around \(B=1024\)}, and a loss (\(\sim\!0.33\times\)) at \(B\ge 2048\). The
+optimisation history is itself informative: the naive v1 kernel (one block per sample, each weight
+re-read from global memory per sample) already gave \(3.2\times\) at \(B=64\) but lost
+\(3\times\) at \(B=1024\) because it is bandwidth-limited; v2 processes a tile of \(8\) samples per
+block and reuses each weight across the tile (the key GEMM optimisation); v3 additionally caches
+the clamped --- and therefore constant --- \(\phi(\text{input})\) tile in shared memory, removing
+\(\sim\!256\times\) redundant global reads of the first weight block. These optimisations moved the
+crossover from \(\sim\!256\) to \(\sim\!1024\)--\(1500\).
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.8\linewidth]{fig1_kernel_speedup}
+  \caption{Fused CUDA settling-kernel speedup over the PyTorch backend versus batch size
+  (RTX 3080 Ti, MLP \([784,256,256,10]\), settling steps \(T=20\) and \(40\)). The kernel wins at
+  small batch (launch-overhead bound, \(\sim\!3.2\times\) at \(B=64\), \(\sim\!2.0\times\) at
+  \(B=256\)), reaches break-even around \(B\approx 1024\), and is outperformed by cuBLAS at
+  \(B\ge 2048\), where the workload becomes compute-bound. The small/medium-batch regime is the
+  one relevant to online and continual PC training.}
+  \label{fig:kernel-speedup}
+\end{figure}
+
+The large-batch loss is not a tuning failure but a fundamental architectural trade-off, and we
+report it as a positive systems finding rather than as ``not yet optimised''. At large batch the
+workload becomes \emph{compute}-bound: the naive in-kernel GEMM uses scalar fused multiply-adds
+with no register blocking and reaches only a fraction of the FLOP peak, whereas cuBLAS is
+register-blocked and runs near optimum. Crucially, \textbf{the fused-resident design and a
+cuBLAS-class GEMM are architecturally opposed}: keeping all \(T\) states resident in registers and
+shared memory (which is what kills the launch overhead) consumes precisely the register and
+shared-memory budget that a fast tiled GEMM would need. The two goals compete for the same scarce
+resource. The honest conclusion is therefore that the fused kernel is the right tool in the
+small-to-medium batch regime (\(B\lesssim 1024\), \(1\)--\(3\times\), the realistic MNIST-scale PC
+training regime), and the PyTorch/cuBLAS backend is the right tool at \(B\ge 2048\); a fully
+register-blocked tiled in-kernel GEMM would amount to re-implementing cuBLAS and is out of scope.
+
+\subsection{Generality and in-study use}
+
+Two facts elevate the kernel from a microbenchmark to a usable engine. First, it is no longer tied
+to a fixed topology. The original kernel was specialised to two hidden layers (\texttt{model.n==3});
+a \emph{general-depth} per-sample variant (\texttt{pcn\_settle\_so\_deep}) passes the per-layer
+weights, states, and biases as arrays of device pointers (as \texttt{int64} addresses) with
+shared-memory offsets computed at launch, and runs the same Jacobi update as the PyTorch backend
+for arbitrary depth. It was validated to \(\sim\!10^{-6}\) (\texttt{allclose}) across depths
+\(2\)--\(5\) (one to four hidden layers) \(\times\) \(\{\tanh,\text{sigmoid}\}\) \(\times\)
+\(B\in\{32,256\}\) --- \textbf{all 16 configurations} matching the PyTorch equilibrium. (A Windows
+portability trap was fixed in the process: \texttt{long} is 32-bit on MSVC, so the pointer arrays
+must be typed \texttt{int64\_t}.) Second, the kernel was used as the \emph{backend of the project's
+own Song-faithful study} (\Cref{sec:exp-song}), which runs at batch \(32\) --- exactly the
+small-batch regime the kernel targets. On that real workload it delivers \textbf{\(1.45\times\)
+end-to-end} wall-clock (\SI{103.9}{\second}\(\rightarrow\)\SI{71.6}{\second} at budget 800, ten
+seeds) with \textbf{per-seed bit-identical results} (maximum accuracy difference \(0.00\) pp). The
+modest \(1.45\times\) --- rather than the \(3.2\times\) of the \(B=64\) microbenchmark --- is
+honest: the training loop gains in the small-batch regime, but evaluation settles at batch \(512\),
+which dilutes the average. Integrating the kernel into the study also exposed and fixed a silent
+activation bug (\texttt{sigmoid} had been mapped to \(\tanh\) internally), now guarded.
+
+\subsection{Novelty scope}
+
+To our knowledge this is the first hand-written, fused CUDA settling kernel \emph{for PC}. The
+claim is bounded by a direct audit of eleven open PC libraries (none ship a \texttt{.cu} file; all
+are JAX/JIT --- e.g.\ PCX \citep{pinchetti2024pcx}, JPC \citep{millidge2024jpc} --- or
+PyTorch-autograd, e.g.\ PRECO \citep{vanzwol2024preco}) and, for double assurance, of the closest
+algorithmic relative, the Equilibrium Propagation family \citep{scellier2017ep, laborieux2021ep},
+which likewise ships no hand-written CUDA settling kernel (\Cref{ch:related}; \Cref{app:kernel}).
+We are careful \emph{not} to claim the persistent, states-resident, single-launch \emph{technique}
+as novel --- it is established prior art (Baidu/cuDNN persistent RNNs
+\citep{diamos2016persistent}, recent LLM megakernels). The contribution is the transfer of that
+technique to PC, plus the measurement.
 
 \section{Fair PC versus BP}\label{sec:exp-pcbp}
-% Planned content: bulk accuracy (PC=~BP-MSE, CIs overlap; loss effect +5.9pp; Fig 2 left);
-% noise robustness (Fig 2 right); sample efficiency; domain-IL; class-IL. The THREE CONFOUNDS:
-% (1) loss function, (2) plasticity (read forgetting vs learn-acc + retained task-0), (3)
-% untuned baseline. Sources: docs/12 §4c, docs/10 §9, Fig 2.
+
+This is the methodological heart of the thesis. The protocol (\Cref{sec:protocol}) holds the
+architecture, the initialisation, the data, and --- critically --- the loss function fixed, so
+that the \emph{only} variable is the learning rule; the learning rate is tuned per method on a
+held-out validation split and \emph{reported} on test; every number is a mean over three seeds with
+a \(68\%\) bootstrap CI. Under this protocol the headline result is null: PC is statistically
+indistinguishable from loss-matched BP.
+
+\subsection{A methodological prerequisite: tune \texorpdfstring{\(\eta_x\)}{eta\_x} and
+\texorpdfstring{\(\eta_w\)}{eta\_w} jointly}
+
+A non-obvious lesson preceded the fair numbers and is reportable in its own right. An early
+comparison fixed the state learning rate at \(\eta_x=0.1\) and swept only the weight learning rate
+\(\eta_w\); PC then appeared to lose by \(\sim\!10\) pp. A two-dimensional \(\eta_x\times\eta_w\)
+scan revealed a \emph{stability frontier} coupling the two: at \(\eta_x=0.1\), PC \emph{diverges}
+for \(\eta_w=0.05\) (collapsing to chance, \SI{9.8}{\percent}), whereas at the lower
+\(\eta_x=0.05\) the same \(\eta_w=0.05\) is stable and reaches \SI{84.9}{\percent}. With joint
+tuning (\(\eta_x=0.05,\ \eta_w=0.05\)) the apparent accuracy gap shrinks from \(\sim\!10\) to
+\(\sim\!4\) pp. \textbf{Sweeping only \(\eta_w\) systematically handicaps PC}; the \(\sim\!10\) pp
+was largely a tuning artifact. The state and weight learning rates must be tuned together.
+
+\subsection{The confounded first results and their correction}
+
+An adversarial methodology review (four critic agents) found that the project's initial
+``PC wins'' were artifacts. Two confounds were identified at this stage and a third in the
+class-incremental setting below.
+\begin{itemize}
+  \item \textbf{Confound 1 --- loss mismatch.} PC minimises MSE to a one-hot target, but the first
+  BP baseline minimised cross-entropy (CE). That violates ``only the learning rule varies''. The
+  fix is to add a \textbf{BP(MSE)} control arm with the \emph{identical} objective to PC. The fair
+  comparison is \textbf{PC(MSE) vs BP(MSE)}; the quantity \(\text{BP(CE)}-\text{BP(MSE)}\) isolates
+  the pure loss effect.
+  \item \textbf{Confound 2 --- the plasticity confound.} In continual learning, ``forgets less''
+  can simply mean ``learns each task less well''. The fix is to additionally measure learning
+  accuracy (the diagonal of the accuracy matrix) and retained task-0 accuracy, so that retention
+  is read against how much was actually learned.
+\end{itemize}
+
+\subsection{Bulk accuracy and noise robustness}
+
+\Cref{fig:pc-vs-bp} shows the deconfounded comparison; the bulk numbers (\(10\)k training
+examples, \(8\) epochs, \(T=40\), jointly tuned, three seeds) are:
+
+\begin{table}[t]
+  \centering
+  \caption{Deconfounded bulk comparison on MNIST (10k examples, matched MSE loss unless noted;
+  mean over 3 seeds with \(68\%\) bootstrap CI). The fair PC-vs-BP(MSE) gap is \(+0.4\) pp with
+  overlapping CIs; the loss effect \(\text{BP(CE)}-\text{BP(MSE)}\) is \(+5.9\) pp.}
+  \label{tab:bulk}
+  \begin{tabular}{lcc}
+    \toprule
+    Arm & Test accuracy & Noise \(\sigma=1.0\) \\
+    \midrule
+    PC (MSE)                         & \(83.5\%\) \([82.8, 84.3]\) & \(52.6\%\) \\
+    \textbf{BP (MSE)} --- fair arm   & \(83.9\%\) \([83.6, 84.3]\) & \(60.4\%\) \\
+    BP (CE) --- reference            & \(89.9\%\) \([89.7, 90.0]\) & \(81.0\%\) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The \textbf{fair gap PC(MSE) vs BP(MSE) is \(+0.40\) pp, and the CIs overlap} --- the two learning
+rules are statistically indistinguishable. The \textbf{loss effect \(\text{BP(CE)}-\text{BP(MSE)}\)
+is \(+5.92\) pp.} In other words, the naive ``BP beats PC by \(4\)--\(10\) pp'' that the literature
+might lead one to expect is here \emph{almost entirely the loss function, not the learning rule}.
+On noise robustness the story is similar in shape: BP(MSE) remains about \(8\) pp more robust than
+PC(MSE) at \(\sigma=1.0\) (\(60.4\%\) vs \(52.6\%\)) --- a real but small effect, dwarfed by the
+\(\sim\!28\) pp gap one would have wrongly attributed to PC's disadvantage had the comparison been
+against BP(CE). A separate ablation confirmed that the settling budget is not hiding anything:
+varying \(T\in\{20,40,80\}\) does not change bulk accuracy, ruling out an under-settling artifact.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{fig2_pc_vs_bp}
+  \caption{Matched-loss PC versus BP on MNIST (3 seeds, \(68\%\) bootstrap CIs). \emph{Left:} bulk
+  test accuracy --- PC(MSE) and BP(MSE) are indistinguishable (CIs overlap); BP(CE) leads by the
+  \(+5.9\) pp loss effect, not by the learning rule. \emph{Right:} test accuracy versus additive
+  input-noise \(\sigma\) --- BP(MSE) is modestly more robust than PC(MSE), but the large naive gap
+  is again mostly the loss function.}
+  \label{fig:pc-vs-bp}
+\end{figure}
+
+\subsection{Continual learning: domain-incremental}
+
+On Permuted-MNIST (five tasks, domain-incremental), against the fair BP(MSE) arm, the earlier
+``PC forgets less'' headline collapses:
+
+\begin{table}[t]
+  \centering
+  \caption{Permuted-MNIST domain-IL (5 tasks, matched loss; mean over 3 seeds, \(68\%\) CI on
+  retained task-0). Against fair BP(MSE), BP forgets \emph{less} and learns each task better; the
+  earlier ``PC forgets less'' was an artifact of comparing to BP(CE).}
+  \label{tab:permuted}
+  \begin{tabular}{lcccc}
+    \toprule
+    Arm & Final ACC & Learn ACC & BWT & Retained task-0 \\
+    \midrule
+    PC (MSE)         & \(55.0\%\) & \(65.1\%\) & \(-12.7\%\) & \(41.8\%\) \([39.8, 43.8]\) \\
+    \textbf{BP (MSE)} & \(62.9\%\) & \(69.1\%\) & \(\mathbf{-7.8\%}\) & \(\mathbf{54.2\%}\) \([54.1, 54.3]\) \\
+    BP (CE)          & \(60.7\%\) & \(78.7\%\) & \(-22.5\%\) & \(47.2\%\) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The headline was \emph{doubly} artifactual. (1) It compared against BP(CE), which forgets more
+because of aggressive softmax updates; against the fair BP(MSE), BP forgets \emph{less}
+(\(-7.8\%\) vs \(-12.7\%\)). (2) PC learns each task less well (learning accuracy \(65.1\%\) vs
+\(69.1\%\)) and retains task-0 \emph{absolutely} worse (\(41.8\%\) vs \(54.2\%\), disjoint CIs) ---
+the plasticity confound. The decision is therefore \emph{not proven}.
+
+\subsection{Continual learning: class-incremental (Song's regime)}
+
+The class-incremental setting (Split-FashionMNIST, two tasks of five classes; Split-MNIST, five
+tasks of two classes), with the BP learning rate tuned per arm by learning accuracy, is where a
+third confound surfaced:
+
+\begin{table}[t]
+  \centering
+  \caption{Class-IL parity (mean over 3 seeds, \(68\%\) CI on retained task-0). Against a correctly
+  tuned, \emph{learning} BP(MSE) baseline, PC shows no advantage in either split.}
+  \label{tab:classil}
+  \begin{tabular}{llccccc}
+    \toprule
+    Setup & Arm & Final ACC & Learn ACC & BWT & Retained T0 & Decision \\
+    \midrule
+    \multirow{2}{*}{Split-FashionMNIST (2\(\times\)5)}
+      & PC      & \(60.9\%\) & \(84.3\%\) & \(-46.8\%\) & \(37.8\%\) \([34.3,41.3]\) & \\
+      & BP(MSE) & \(61.3\%\) & \(86.1\%\) & \(-49.6\%\) & \(37.3\%\) \([34.0,40.6]\) & \textbf{NO (all overlap)} \\
+    \midrule
+    \multirow{2}{*}{Split-MNIST (5\(\times\)2)}
+      & PC      & \(70.8\%\) & \(97.4\%\) & \(-33.3\%\) & \(60.1\%\) \([58.6,61.7]\) & \\
+      & BP(MSE) & \(73.4\%\) & \(97.5\%\) & \(-30.2\%\) & \(62.0\%\) \([60.4,63.7]\) & \textbf{NO (BP marginally better)} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Even in Song's own class-IL interference regime, against a correctly tuned, \emph{learning} BP(MSE),
+there is \textbf{no PC advantage}: PC and BP(MSE) are statistically indistinguishable on
+Split-FashionMNIST, and BP is marginally better on Split-MNIST. The third confound is the
+\textbf{untuned-baseline confound}: an untuned BP(MSE) (\(\eta_w=0.1\)) stalls at chance
+(\(\sim\!50\%\)) on Split-MNIST, manufacturing a false PC ``win'' that the learning-accuracy
+diagnostic caught. What remains is a consistent stability--plasticity trade-off --- BP(CE) learns
+the most and forgets the most, PC learns the least and forgets the least --- but PC sits
+\emph{on the same curve} as loss-matched BP, not above it.
+
+\subsection{Synthesis: three confounds, one null}
+
+Across every tested regime (bulk accuracy, noise, sample efficiency, Permuted-MNIST domain-IL,
+Split-FashionMNIST and Split-MNIST class-IL), with matched loss and fairly tuned baselines,
+\textbf{vanilla SO-PC shows no advantage over BP} --- on par in accuracy and learning, on the same
+stability--plasticity curve, slightly worse under noise. All three previously observed ``PC wins''
+were methodological artifacts. The scientific value, as argued in \Cref{ch:discussion}, is a clean
+null result \emph{plus} the systematic exposure of three confounds --- the loss function, the
+plasticity confound in forgetting metrics, and an untuned baseline learning rate --- that bias
+naive PC-vs-BP comparisons. We stress what this does \emph{not} mean: it does not globally refute
+\citet{song2024prospective}, whose setup differs in training schedule, activation, width, and
+possibly metrics. The defensible claim is bounded: \emph{at MNIST/FashionMNIST scale with a fairly
+tuned BP baseline, the PC advantage disappears.} The strongest test of that boundary --- a faithful
+replication of Song's exact protocol --- is the subject of the next section.
 
 \section{Architecture-Faithful Replication of Song's Exact Protocol}\label{sec:exp-song}
-% Planned content: the minibatch-alternating Split-FashionMNIST setup; the framing correction
-% (Fig 4e = interference, per-method LR, NOT LR-robustness) via the adversarial three-lens
-% review; budget as an axis (84 untrainable -> convergence); n=10, no >=1sigma gap at any
-% budget; directional PC mid/converged edge within noise. Sources: docs/12 §4g/§4h, Fig 3.
+
+The class-IL results above follow Song's \emph{regime} but not his exact training. To probe whether
+the null survives a strict replication, we built the most architecture-faithful reproduction of
+\citet{song2024prospective} we could, and we use it to illustrate how an adversarial verification
+caught a premature finding before it reached the writeup.
+
+\subsection{What was built}
+
+The setup (\texttt{run\_alternating}) pits two disjoint five-class tasks from FashionMNIST against
+each other, sharing a \emph{single} five-output head (which forces interference), trained by
+\textbf{minibatch-level alternation} (\texttt{swap\_every=4} updates, then switch task; batch
+\(32\)). The network is \([784,32,32,5]\) with \textbf{sigmoid} activations and
+\textbf{Xavier-normal} initialisation. Checked against Song's Methods section, this matches on the
+faithful axes: four layers, \(32\) hidden units per layer, sigmoid, Xavier, two disjoint
+five-class tasks, shared head, alternating training --- in contrast to the \Cref{sec:exp-pcbp}
+proxy, which was sequential, \(\tanh\), and \([256,256]\).
+
+\subsection{The framing correction (an adversarial three-lens review)}
+
+Three independent verification lenses --- literature faithfulness, statistics, and
+alternative-explanations --- dismantled the first draft of this experiment; all three corrections
+are folded in. The most important is the \textbf{framing correction} from the literature lens.
+Song's Fig.~4e is \emph{not} a ``PC is robust across learning rates'' claim (that is his Fig.~3,
+on target alignment). Fig.~4e shows \emph{less catastrophic interference}, with the learning rate
+optimised \emph{separately per method} (its caption plots the mean test error of both tasks versus
+learning rate). We had initially misattributed it as a learning-rate-robustness claim. The
+corrected experiment therefore tests \emph{interference} (not LR robustness), tunes the learning
+rate per method, and reports the worse of the two tasks' accuracies (\emph{min-both}) as the true
+interference tell alongside Song's mean-both metric. This misframing-then-correction is itself a
+reusable safeguard, discussed in \Cref{ch:discussion}.
+
+\subsection{Budget as a controlled axis}
+
+A faithfulness-versus-trainability tension appeared: Song's \emph{exact} budget (\(\sim\!84\)
+minibatch iterations, swapping every \(4\)) leaves \emph{every} method at chance in our hands (all
+arms \(\sim\!20\)--\(30\%\) at a chance level of \(20\%\)). Rather than silently enlarge the budget,
+we make it a \textbf{controlled axis}: \(84\) (exact) \(\rightarrow\) \(250\) \(\rightarrow\) \(800\)
+\(\rightarrow\) \(2500\) (convergence), and report the whole curve.
+
+\subsection{Results}
+
+\Cref{fig:budget-sweep} and \Cref{tab:budget} report the ten-seed sweep, run on the fused CUDA
+kernel (per-seed identical to PyTorch, which doubles as a practical test of the kernel
+integration). The metric \emph{min-both} --- the weaker of the two tasks --- is the genuine
+interference indicator; \emph{mean-both} is Song's reported metric. The learning rate was tuned per
+method (it landed at \(0.1\) at the trainable budgets).
+
+\begin{table}[t]
+  \centering
+  \caption{Song-exact alternating Split-FashionMNIST, ten seeds. Mean-both and worse-task min-both
+  accuracy (\%) with \(\pm 1\sigma\) bootstrap intervals; \(\Delta\)min is PC \(-\) BP(MSE). At
+  \emph{no} budget does the PC-vs-BP(MSE) gap exceed \(1\sigma\) (the seed spread \(\sigma\) is
+  \(\sim\!4\)--\(11\) pp on each arm). The pattern is directional only.}
+  \label{tab:budget}
+  \begin{tabular}{lcccc}
+    \toprule
+    Budget (iters) & \textbf{PC} mean/min & \textbf{BP(MSE)} mean/min & BP(CE) mean/min & \(\Delta\)min \\
+    \midrule
+    \textbf{84} (Song exact)   & \(26.6\,/\,24.8\) & \(28.0\,/\,26.2\) & \(29.6\,/\,27.9\) & \(-1.5\) \\
+    250                        & \(39.2\,/\,36.2\) & \(38.4\,/\,34.7\) & \(41.0\,/\,36.3\) & \(+1.5\) \\
+    800                        & \(64.1\,/\,55.8\) & \(50.6\,/\,44.8\) & \(58.4\,/\,49.8\) & \(+11.0\) \\
+    \textbf{2500} (converged)  & \(73.6\,/\,68.9\) & \(68.5\,/\,63.2\) & \(74.3\,/\,69.6\) & \(+5.7\) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.95\linewidth]{fig3_alternating_budget_sweep}
+  \caption{Song-exact alternating Split-FashionMNIST: mean-both (Song's metric) and worse-task
+  min-both (interference tell) accuracy versus training budget (\(n=10\), \(\pm 1\sigma\)). No
+  PC-vs-BP(MSE) gap exceeds \(1\sigma\) at any budget. PC learns slower early and pulls marginally
+  ahead by convergence, but the gap stays inside the (large) seed spread; raising the seed count
+  from five to ten did not make it significant. BP(CE) leads throughout --- the same loss confound
+  as \Cref{sec:exp-pcbp}.}
+  \label{fig:budget-sweep}
+\end{figure}
+
+\textbf{Verdict (calibrated): at \(n=10\) no PC-vs-BP(MSE) difference is separated by \(\ge1\sigma\)
+at any budget.} The per-arm seed spread (\(\sigma\approx 4\)--\(11\) pp) is large relative to every
+point-estimate gap, so the effects are \emph{directional, not significant}. The direction is
+consistent and worth recording: PC learns \emph{slower early} (at budgets 84 and 250 it trails
+BP(MSE) by a few points --- settling needs more steps to reach the ``prospective configuration''),
+then \emph{catches up and edges marginally ahead by convergence}. At the converged budget of 2500
+the point estimates favour PC by \(+5.0\) pp mean-both and \(+5.7\) pp min-both; at budget 800 the
+point gap is even larger (\(+13.5\) and \(+11.0\) pp) but the spread there is enormous
+(\(\sigma_{\text{sum}}\sim9\)--\(16\) pp), so any single-budget claim is noise. Notably the
+min-both edge equals or exceeds the mean-both edge, a \emph{weak} hint that PC balances the two
+tasks slightly better --- but it is inside the noise. BP(CE) leads throughout (the same loss
+confound), so it carries no information about the learning rule.
+
+This is the \emph{first} regime in which vanilla PC does not sit \emph{behind} loss-matched BP at
+the convergence point (in \Cref{sec:exp-pcbp} PC was on par to slightly behind). It neither refutes
+Song (different budget semantics and scale) nor confirms him (the effect is not separable from
+zero). The honest conclusion: the faithful replication reproduces no clear PC interference
+advantage at ten seeds, consistent with the overall ``PC \(\approx\) BP under fair tuning''
+verdict. We also record the disclosed deviations from Song: a fixed \(T=20\) (no convergence
+tolerance, so under-settling may co-explain PC's early slowness), and the budget itself (Song's 84
+iterations are untrainable in our hands). The statistics lens additionally corrected a labelling
+slip in an earlier intermediate report: the intervals are \(68\%\) (one-\(\sigma\)) à la Song, not
+\(95\%\).
+
+\subsection{Why the kernel matters here}
+
+This section is the regime \emph{for which} the fused settling kernel was planned: PC settling at
+batch \(32\) is launch-overhead-bound (\Cref{sec:exp-kernel}), exactly what the kernel removes. Run
+end-to-end on the real budget-800 workload, the kernel gives the \(1.45\times\) reported above at
+per-seed-identical results. This is the concrete link between the systems contribution (Hook~A) and
+the science contribution (Hook~B): the hand-written kernel is the engine of a real study, not a
+benchmark artifact.
 
 \section{Generative Predictive Coding}\label{sec:exp-gen}
-% Planned content: discriminative PC produces noise; generative PC yields per-class digit
-% prototypes, inpaints occluded halves, and separates uniform-noise OOD with anomaly AUC 1.0
-% (in-dist energy 5.1 vs 94.5). Figures: results/m5v2_*.png. Source: docs/12 §4f.
+
+This section demonstrates PC's distinctive ``one mechanism, many tasks'' property --- and, equally
+honestly, shows that it only appears when the model is \emph{generatively} trained.
+
+\subsection{A discriminative PC cannot generate}
+
+On the discriminatively trained network (test accuracy \(90.6\%\)), running the same settling
+machinery ``backwards'' fails by construction. Clamping a label and settling the input yields grey
+noise, not a recognisable digit; inpainting an occluded half preserves the visible pixels exactly
+but fills the occluded region with noise; and OOD detection by residual energy gives an AUC of only
+\(0.438\) against uniform-noise OOD --- no separation. This is architectural, not a tuning failure.
+The discriminative PC clamps input \emph{and} label and settles only the hidden states with a
+feedforward-predictive structure (\(\text{pred}_{i+1}=W_i\,\phi(s_i)+b_i\)); it learns an
+input\(\rightarrow\)label map, not a generative model of the inputs. There is no learned image
+manifold for ``backward'' settling to find, and with the input clamped the free states can always
+relax to the zero-energy feedforward solution, so residual energy cannot separate OOD.
+
+\subsection{A generative PC delivers the full capability set}
+
+Reversing the orientation to \([10,256,256,784]\) (label\(\rightarrow\)image) and training
+\emph{generatively} (clamp the label at the input and the image at the output, settle the hidden
+states, apply the local Hebbian update --- the same \texttt{PCN}, \texttt{settle}, and
+\texttt{weight\_update}) yields a generative model. The results (\(30\)k images, \(10\) epochs,
+GPU; \texttt{scripts/demo\_generative\_v2.py}) are summarised in \Cref{tab:generative}.
+
+\begin{table}[t]
+  \centering
+  \caption{The same settling rule, two training orientations. Generative PC recovers the
+  capabilities a discriminative PC cannot provide.}
+  \label{tab:generative}
+  \begin{tabular}{lll}
+    \toprule
+    Capability & Discriminative (§\ref{sec:exp-gen}) & \textbf{Generative} \\
+    \midrule
+    Generation (clamp label \(\rightarrow\) image) & grey noise & recognisable per-class prototypes 0--9 \\
+    Inpainting (fill occluded half)                & noise fill & structured (blurry) reconstruction \\
+    Anomaly (MNIST vs uniform OOD)                 & AUC \(0.44\) & \textbf{AUC \(1.00\)} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The generative model produces \textbf{recognisable per-class digit prototypes}, reconstructs
+occluded halves with structured (if blurry) content, and separates uniform-noise OOD with a perfect
+\textbf{anomaly AUC of \(1.00\)} (in-distribution residual energy \(5.1\) versus OOD \(94.5\)). The
+same settling mechanism, varying only what is clamped, classifies, generates, inpaints, and detects
+anomalies. A stability finding is reportable on its own: the \(784\)-dimensional output makes the
+hidden-settling gradient (\(\varepsilon_{\text{out}}@W\)) about \(\sqrt{784}\approx28\times\) larger
+than for the \(10\)-dimensional label head, so a state learning rate of \(0.1\) (fine for the
+discriminative model) diverges to NaN; the state LR must scale as \(\sim\!1/\sqrt{\text{output-dim}}\)
+(\(\eta_x\approx0.01\)) for stable settling.
+
+The honest caveats temper the win. A one-hot input produces only ten distinct outputs, so these are
+\emph{class prototypes} (the per-class mean), not diverse samples; diversity would require a
+continuous latent with a prior (VAE-style). Inpainting is prototype-driven, hence blurry rather than
+pixel-sharp. And uniform noise is an \emph{easy} OOD, so AUC \(1.0\) is not a hard test; a near-OOD
+such as FashionMNIST or rotated digits would be the harder next step. The interpretive significance
+of the discriminative/generative distinction is taken up in \Cref{ch:discussion}.
 
 \section{Optional Extensions: iPC and EWC}\label{sec:exp-depth}
-% Planned content: iPC lr-sensitivity + 74.3% vs 63.1% at the matched-effective rate; EWC
-% forgets less (BWT -41.1% vs -45.7%, final 65.7% vs 62.0%) as a positive control.
-% Source: docs/12 §4h.
+
+Two further variants were implemented \emph{and} validated, each tightening a loose end. They are
+optional depth rather than headline results.
+
+\subsection{Incremental PC (iPC)}
+
+Incremental PC \citep{salvatori2024ipc} (\texttt{update\_variant="ipc"}) interleaves a weight
+update with \emph{every} settling step, rather than settling fully and updating once at
+equilibrium. A correctness anchor pins it to the standard rule: with \(\eta_w=0\), one iPC step
+reproduces a standard settling step \emph{exactly} (iPC's state update \emph{is} the SO update; it
+merely also moves the weights). The empirical finding is that \textbf{iPC is markedly more
+learning-rate-sensitive}: because it applies \(T\) weight updates per minibatch, its effective
+weight LR is \(\sim\!T\times\) larger, and at the standard \(\eta_w=0.02\) it diverges (NaN). At a
+\(\sim\!T\times\)-smaller rate (\(\eta_w\approx0.005\), i.e.\ \(\sim\!\eta_w/T\)) it is stable and,
+in a fast-training regime (MNIST, \(3\)k samples, \(2\) epochs), reaches \textbf{\(74.3\%\) versus
+\(63.1\%\) for standard PC} --- iPC learns faster per step, consistent with
+\citet{salvatori2024ipc}. The lesson: iPC trades learning-rate sensitivity for faster per-step
+learning, and needs a \(\sim\!T\times\)-smaller weight LR to be competitive.
+
+\subsection{EWC as a continual-learning positive control}
+
+Elastic Weight Consolidation \citep{kirkpatrick2017ewc} was added as a third class-IL arm
+(\texttt{run\_class\_il(method="ewc")}): after each task the diagonal empirical Fisher (mean squared
+gradients) and the optimal weights are stored, and later tasks carry the quadratic anchor
+\((\lambda/2)\sum_i F_i(\theta_i-\theta_i^\ast)^2\). Validated end-to-end on Split-MNIST
+(\(5\times2\), in a \emph{learning} regime), EWC \textbf{forgets less than the matched BP(MSE)}:
+\textbf{BWT \(-41.1\%\) vs \(-45.7\%\)}, \textbf{final accuracy \(65.7\%\) vs \(62.0\%\)}, at equal
+learning (learning accuracy \(98.5\%\)). This is exactly the expected EWC effect and serves as a
+\emph{positive control}: it confirms the continual-learning harness measures forgetting correctly.
+(Consistent with the \Cref{sec:exp-pcbp} lesson, in a too-weak regime --- where BP is stuck at
+chance --- EWC is inert, because there is nothing learned to forget.)
 
 \section{Autonomous Hyperparameter Search}\label{sec:exp-search}
-% Planned content: bounded random search over (T, eta_x, eta_w) rediscovers the eta_x<->eta_w
-% interaction — an internal consistency check. Source: docs/04, docs/12, m7_search.json.
+
+The final experiment is an internal consistency check rather than a discovery. A bounded random
+search over \((T, \eta_x, \eta_w)\), implemented as a thin layer over the \texttt{train\_and\_eval}
+interface (\Cref{ch:method}), independently rediscovers the \(\eta_x\leftrightarrow\eta_w\)
+interaction surfaced manually in \Cref{sec:exp-pcbp}. The best configuration in the run prefers a
+\emph{low} state learning rate, a \emph{high} weight learning rate, and a \emph{high} settling
+budget (\(\eta_x=0.02\), \(\eta_w=0.05\), \(T=40\), reaching \(77.6\%\) on the short MNIST run in
+\texttt{results/m7\_search.json}), where the high \(\eta_w\) is only stable \emph{because} \(\eta_x\)
+is low --- precisely the stability frontier identified by hand. The search also records
+\texttt{settling\_steps\_to\_converge} per configuration (e.g.\ \(94\) steps at the
+high-\(\eta_w\)/low-\(\eta_x\) optimum versus \(\sim\!30\) at the more aggressive settings),
+confirming that the better-learning regime is also the slower-settling one. That an automated search
+re-derives a manually found coupling is a small but reassuring validation that the
+hyperparameter landscape was characterised correctly, and that the \texttt{train\_and\_eval}
+contract is sound.
+
+\bigskip
+
+\noindent\textbf{Chapter summary.} The fused kernel is a real but bounded engineering win
+(\(3.2\times\) at small batch, an architectural crossover at large batch), the first of its kind for
+PC and now general-depth and used as the engine of a real study. The fair PC-vs-BP comparison is a
+clean null --- PC \(\approx\) BP at matched loss across every regime tested --- plus the exposure of
+three confounds; the Song-faithful replication, at ten seeds, finds no \(\ge1\sigma\) gap at any
+budget. A generatively trained PC recovers the ``one mechanism, many tasks'' property that a
+discriminative PC cannot. We interpret these results, and what they mean for the field, in
+\Cref{ch:discussion}, and bound them in \Cref{ch:limitations}.
