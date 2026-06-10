@@ -60,7 +60,7 @@ def fig_kernel_speedup():
 
 
 def fig_budget_sweep():
-    d = _load("m4_alternating_song_exact_budgetsweep_s5.json")
+    d = _load("m4_alternating_song_exact_budgetsweep_s10.json")
     budgets = d["budgets"]
     arms = ["PC", "BP_MSE", "BP_CE"]
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), sharex=True)
@@ -81,7 +81,7 @@ def fig_budget_sweep():
     axes[0].annotate("Song's exact\nbudget = 84\n(untrainable)", xy=(84, 30), xytext=(95, 33),
                      fontsize=7.5, color="black")
     axes[0].legend(frameon=False, fontsize=8, loc="lower right")
-    fig.suptitle("Song-exact alternating Split-FashionMNIST 2x5 (sigmoid [32,32], n=5, ±1σ) — "
+    fig.suptitle("Song-exact alternating Split-FashionMNIST 2x5 (sigmoid [32,32], n=10, ±1σ) — "
                  "no PC-vs-BP(MSE) gap exceeds 1σ at any budget", fontsize=10)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     _save(fig, "fig3_alternating_budget_sweep")

@@ -579,6 +579,15 @@ Small-Batch-Regime); ein register-geblocktes Tiled-GEMM für große Batch bei gr
 offen. **Bedeutung:** die Tiefen-Spezialisierung (eine der dokumentierten Kernel-Limitationen,
 `docs/15`) ist damit aufgehoben — der Kernel ist nicht mehr an die 2-Hidden-Layer-Topologie gebunden.
 
+**Mehr Seeds (n=10) für §4g.** Der §4g-Budget-Sweep, neu mit **n=10** und **auf dem CUDA-Kernel**
+gefahren (Per-Seed identisch zu PyTorch — zugleich ein Praxistest der Kernel-Integration). Er
+**bestätigt die n=5-Aussage robust:** bei **keinem** Budget ist PC vs. BP(MSE) um ≥1σ getrennt (auch
+bei n=10). Das direktionale Muster bleibt — PC früh langsamer, ab mittlerem Budget vorn — und ist im
+Punktschätzer sogar ausgeprägter (Budget 800: Δmin_both **+11,0 pp**, 55,8 vs 44,8; Konvergenz 2500:
+**+5,7 pp**), aber bei großer Seed-Streuung (σ_sum ~9–16 pp) weiterhin **im Rauschen**. Mehr Seeds
+haben den Effekt also *nicht* signifikant gemacht; sie härten das ehrliche Fazit „kein klarer
+PC-Vorteil gegenüber fair getuntem BP" (`results/m4_alternating_song_exact_budgetsweep_s10.json`).
+
 ---
 
 ## 5. Verweis
