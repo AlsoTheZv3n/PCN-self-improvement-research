@@ -6,16 +6,20 @@ settling kernel. English thesis; the research content lives in `../docs/` (00–
 
 ## Build
 
-No `biber` needed (uses `natbib` + BibTeX):
+No `biber` needed (uses `natbib` + BibTeX). Verified with **tectonic** (single binary, fetches
+packages itself):
 
 ```bash
-pdflatex main && bibtex main && pdflatex main && pdflatex main
-# or simply:
-latexmk -pdf main.tex
+tectonic main.tex
+# or, with a full TeX install:
+pdflatex main && bibtex main && pdflatex main && pdflatex main   # (or: latexmk -pdf main.tex)
 ```
 
-Produces `main.pdf`. The figures are pulled from `../figures/` (regenerate with
-`uv run python ../scripts/make_figures.py`).
+This produces `main.pdf`. The committed, reader-facing final is
+**`Weidenmann_Predictive-Coding-from-Scratch.pdf`** (a copy of `main.pdf`); refresh it after a
+rebuild with `cp main.pdf Weidenmann_Predictive-Coding-from-Scratch.pdf`. Build intermediates
+(`*.aux`, `*.log`, `*.bbl`, …) and the scratch `main.pdf` are gitignored. Figures are pulled from
+`../figures/` (regenerate with `uv run python ../scripts/make_figures.py`).
 
 ## Structure
 
