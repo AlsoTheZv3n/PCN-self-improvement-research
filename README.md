@@ -44,7 +44,8 @@ Durchbruch:
   Schedule mildert ihn (bekannte Technik, Qi 2025/μPC). Drei gezielte Innovations-Versuche endeten
   als saubere, evidenzbasierte Negative — genuine PC-Neuheit ist auf MNIST-Skala nicht erreichbar.
 
-Alles ist aus dem Repo reproduzierbar (`results/*.json`, `scripts/`, 40 Offline-Tests).
+Alle Experimente, Figuren und Tests sind aus dem Repo reproduzierbar (`results/*.json`,
+`scripts/`, 40 Offline-Tests); die fertige Masterarbeit liegt als PDF unter `thesis/` bei.
 
 ## Wichtigste Regeln
 
