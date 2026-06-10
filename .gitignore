@@ -8,9 +8,9 @@ __pycache__/
 # uv / venv  (uv.lock IS tracked — reproducibility)
 .venv/
 
-# data & artifacts
+# data & artifacts  (results/ IS tracked — small JSON/PNG artifacts back the docs+figures;
+# the *.pt/*.ckpt rules below still exclude any large model dumps that land there)
 data/
-results/
 *.pt
 *.ckpt
 wandb/

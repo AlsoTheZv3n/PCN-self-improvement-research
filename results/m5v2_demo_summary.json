@@ -1,0 +1,10 @@
+{
+  "train_time_s": 94.49463701248169,
+  "anomaly_auc_ood_vs_indist": 1.0,
+  "anomaly_energy_indist_mean": 5.112853050231934,
+  "anomaly_energy_ood_mean": 94.50991821289062,
+  "artifacts": [
+    "m5v2_generate.png",
+    "m5v2_occlusion.png"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "test_acc": 0.9055,
+  "anomaly_auc_ood_vs_indist": 0.4377784729003906,
+  "anomaly_energy_indist_mean": 2.554065227508545,
+  "anomaly_energy_ood_mean": 2.382197380065918,
+  "artifacts": [
+    "m5_generate.png",
+    "m5_occlusion.png"
+  ]
+}

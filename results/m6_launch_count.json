@@ -1,0 +1,22 @@
+{
+  "device": "NVIDIA GeForce RTX 3080 Ti",
+  "batch": 64,
+  "metric": "cudaLaunchKernel events per settle",
+  "rows": [
+    {
+      "T": 20,
+      "pytorch_launches": 620,
+      "fused_launches": 1
+    },
+    {
+      "T": 40,
+      "pytorch_launches": 1240,
+      "fused_launches": 1
+    },
+    {
+      "T": 80,
+      "pytorch_launches": 2480,
+      "fused_launches": 1
+    }
+  ]
+}
