@@ -42,3 +42,8 @@ Thumbs.db
 *.fdb_latexmk
 *.synctex.gz
 thesis/main.pdf
+
+# thesis LaTeX source kept local; the repo ships only the compiled final PDF
+thesis/chapters/
+thesis/frontmatter/
+thesis/main.tex
