@@ -4,7 +4,35 @@ gem_metrics is pure (takes an R-matrix), so no MNIST / training is needed.
 """
 from __future__ import annotations
 
-from pcn.experiments.continual import gem_metrics, make_permutations, make_class_split_tasks
+import torch
+
+from pcn.baselines import BPMLPRef, bp_loss_fn
+from pcn.experiments.continual import (
+    gem_metrics, make_permutations, make_class_split_tasks, _ewc_fisher, _ewc_penalty,
+)
+
+
+def test_ewc_penalty_zero_at_anchor_positive_on_drift():
+    """EWC quadratic anchor: None before any task is consolidated, exactly 0 when params equal
+    the snapshot, strictly positive once a protected weight drifts (Kirkpatrick et al. 2017)."""
+    m = BPMLPRef([784, 8, 5], seed=0)
+    star = [p.detach().clone() for p in m.parameters()]
+    fisher = [torch.ones_like(p) for p in m.parameters()]
+    tasks = [(star, fisher)]
+    assert _ewc_penalty(m, [], 1000.0) is None              # nothing consolidated yet
+    assert float(_ewc_penalty(m, tasks, 1000.0).detach()) == 0.0   # params == anchor -> no penalty
+    with torch.no_grad():
+        next(iter(m.parameters())).add_(0.5)                # drift one protected weight
+    assert float(_ewc_penalty(m, tasks, 1000.0).detach()) > 0.0
+
+
+def test_ewc_fisher_nonnegative_and_informative():
+    """The diagonal Fisher is a mean of squared gradients -> all entries >= 0 and not all zero."""
+    m = BPMLPRef([784, 8, 5], seed=0)
+    loader = [(torch.randn(4, 784), torch.randint(0, 5, (4,)))]
+    fisher = _ewc_fisher(m, loader, bp_loss_fn("ce", 5), "cpu", torch.float32)
+    assert all((f >= 0).all() for f in fisher)
+    assert any(float(f.sum()) > 0 for f in fisher)
 
 
 def test_gem_metrics_known_matrix():

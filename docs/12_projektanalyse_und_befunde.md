@@ -541,6 +541,46 @@ Beitrag A (Systems) und B (Science).
 
 ---
 
+## 4h. Optionale Tiefen (M8, gemessen 2026-06-10): iPC, EWC, Kernel-Tiefe, n=10
+
+Vier eigenständige Erweiterungen — jede implementiert *und* validiert, nicht nur skizziert.
+
+**iPC (Incremental Predictive Coding, Salvatori et al. 2024) — `update_variant="ipc"`.** Statt voll
+zu settlen und *einmal* die Gewichte zu aktualisieren, werden bei iPC nach **jedem** Inferenzschritt
+Zustände *und* Gewichte aus denselben Fehlern aktualisiert (`pcn/learning.py:_ipc_step`,
+`train_epoch_ipc`). Korrektheits-Anker (Test): mit `lr_weight=0` reproduziert ein iPC-Schritt **exakt**
+einen Standard-Settling-Schritt (iPCs State-Update *ist* das SO-Update, es bewegt nur zusätzlich die
+Gewichte). **Befund:** iPC ist deutlich **lr-sensitiver** — es macht T-mal mehr Weight-Updates pro
+Batch, also ist die effektive Lernrate ~T× größer; bei Standard-`eta_w=0.02` divergiert es (NaN), bei
+**`eta_w≈0.005` (~lr/T)** läuft es stabil und erreicht im schnellen Regime (MNIST, 3k Samples, 2
+Epochen) **74,3 % vs. 63,1 % für Standard-PC** — iPC lernt pro Schritt schneller (konsistent mit
+Salvatori et al.). Lehre: iPC braucht eine ~T× kleinere Gewichts-LR, dann ist es kompetitiv/besser.
+
+**EWC (Elastic Weight Consolidation, Kirkpatrick et al. 2017) — Continual-Baseline.** Ein dritter
+class-IL-Arm (`run_class_il(method="ewc")`): nach jeder Task wird die diagonale empirische **Fisher**
+(mittlere quadrierte Gradienten) + die optimalen Gewichte gespeichert, und spätere Tasks erhalten den
+quadratischen Anker `(λ/2)·Σ F_i(θ_i−θ*_i)²` (`_ewc_fisher`/`_ewc_penalty`). **Validiert e2e**
+(Split-MNIST 5×2, lernendes Regime): EWC **vergisst weniger** als das gematchte BP(MSE) —
+**BWT −41,1 % vs. −45,7 %**, **Final-ACC 65,7 % vs. 62,0 %**, bei gleichem Lernen (learn-ACC 98,5 %).
+Genau der erwartete EWC-Effekt; im `classil`-Treiber als Arm verfügbar. (Wichtig, §4c-Lektion: im zu
+schwachen Regime — BP bei Zufall — ist EWC erwartungsgemäß inert, weil nichts zu vergessen ist.)
+
+**Kernel für BELIEBIGE Tiefe (n≠3).** Der fused Settling-Kernel war auf 2 Hidden Layer
+(`model.n==3`) spezialisiert. Neu: ein **general-depth per-sample Kernel** (`settle_kernel_deep` /
+`pcn_settle_so_deep` in `settling_kernel.cu`), der Gewichte/Zustände/Biases als **Arrays von
+Device-Pointern** (als int64-Adressen) plus per-Layer-Größen und **dynamisch berechnete
+Shared-Memory-Offsets** entgegennimmt → settled PCNs *beliebiger* Tiefe mit demselben Jacobi-Update
+wie `_settle_pytorch`. Dispatch (`settling_cuda.py`): `n==3` nutzt weiterhin den optimierten
+v1/v2-Pfad, jede andere Tiefe den Deep-Kernel. **Validiert** (`scripts/verify_kernel.py`): über die
+Tiefen **2/3/4/5** (1–4 Hidden Layer) × tanh+sigmoid × B=32/256 — **alle 16 Konfigurationen
+allclose ~1e-6** zu PyTorch. (Fallstrick gefixt: auf Windows ist `long` 32-bit, die Pointer-Arrays
+müssen `int64_t` sein — sonst Typ-/Größen-Mismatch.) Per-sample only (das launch-bound
+Small-Batch-Regime); ein register-geblocktes Tiled-GEMM für große Batch bei großer Tiefe bleibt
+offen. **Bedeutung:** die Tiefen-Spezialisierung (eine der dokumentierten Kernel-Limitationen,
+`docs/15`) ist damit aufgehoben — der Kernel ist nicht mehr an die 2-Hidden-Layer-Topologie gebunden.
+
+---
+
 ## 5. Verweis
 
 Der konkrete, geordnete Umsetzungsplan (mit verifizierten Quellen und Schritt-für-Schritt-

@@ -64,20 +64,25 @@ def _act_id(model) -> int:
 @torch.no_grad()
 def settle(model, states, clamp_output: bool, T: int, lr_state: float,
            record_energy: bool = False, tol: float | None = None):
-    """Fused-CUDA settling with a batch-size hybrid: per-sample kernel (v1) for small batch,
-    batch-tiled kernel (v2) for large batch. Same (states, energies, steps) contract as
-    _settle_pytorch. v1 scope: model.n == 3; fixed T; energies=[]."""
-    if model.n != 3:
-        raise NotImplementedError(
-            f"CUDA settling kernel is specialised for a 2-hidden-layer PCN (model.n==3); "
-            f"got n={model.n}. Use backend='pytorch'."
-        )
+    """Fused-CUDA settling. For the common 2-hidden-layer net (model.n == 3) a batch-size hybrid
+    of the optimised per-sample (v1) and batch-tiled (v2) kernels is used; for any other depth a
+    general per-sample kernel (pcn_settle_so_deep) settles arbitrary L. Same (states, energies,
+    steps) contract as _settle_pytorch; fixed T; energies=[]."""
     kernel = build()
     dev = states[0].device
     act = _act_id(model)
 
     def cu(x):
         return x.to(device=dev, dtype=torch.float32).contiguous()
+
+    if model.n != 3:
+        # general-depth path (arbitrary number of layers), per-sample kernel
+        s = [cu(states[i]) for i in range(model.n + 1)]
+        W = [cu(model.W[i]) for i in range(model.n)]
+        b = [cu(model.b[i]) for i in range(model.n)]
+        outs = kernel.pcn_settle_so_deep(s, W, b, int(T), float(lr_state),
+                                         int(bool(clamp_output)), int(act))
+        return [s[0], *outs], [], int(T)
 
     s = [cu(states[i]) for i in range(4)]
     W = [cu(model.W[i]) for i in range(3)]

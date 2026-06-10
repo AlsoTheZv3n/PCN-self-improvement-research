@@ -169,9 +169,44 @@ def run_permuted_mnist(method: str, config: dict | None = None, n_tasks: int = 5
             **gem_metrics(R)}
 
 
+def _ewc_fisher(model, loader, loss_fn, device, dtype, max_batches: int = 20):
+    """Diagonal empirical Fisher (Kirkpatrick et al. 2017, EWC): mean squared gradient of the
+    task loss at the just-converged parameters. Weights how strongly the EWC penalty protects
+    each parameter on later tasks. Needs autograd (this is a BP-side baseline, not PC)."""
+    params = list(model.parameters())
+    fisher = [torch.zeros_like(p) for p in params]
+    model.eval()
+    nb = 0
+    for x, y in loader:
+        if nb >= max_batches:
+            break
+        x = x.reshape(x.size(0), -1).to(device, dtype)
+        y = y.to(device)
+        model.zero_grad()
+        loss_fn(model(x), y).backward()
+        for f, p in zip(fisher, params):
+            if p.grad is not None:
+                f += p.grad.detach() ** 2
+        nb += 1
+    return [f / max(nb, 1) for f in fisher]
+
+
+def _ewc_penalty(model, ewc_tasks, lam: float):
+    """EWC quadratic anchor (lam/2) * sum_tasks sum_i F_i (theta_i - theta*_i)^2. None if no task
+    has been consolidated yet (so the first task trains unpenalised)."""
+    if not ewc_tasks:
+        return None
+    params = list(model.parameters())
+    pen = params[0].new_zeros(())
+    for star, fisher in ewc_tasks:
+        for p, s, f in zip(params, star, fisher):
+            pen = pen + (f * (p - s) ** 2).sum()
+    return 0.5 * lam * pen
+
+
 def run_class_il(method: str, config: dict | None = None, dataset: str = "fashion",
                  n_tasks: int = 2, classes_per_task: int = 5, epochs_per_task: int = 5,
-                 split_seed: int = 0, test_limit: int = 2000) -> dict:
+                 split_seed: int = 0, test_limit: int = 2000, ewc_lambda: float = 1000.0) -> dict:
     """Class-incremental continual learning (Song et al. 2024 regime): n_tasks DISJOINT class
     sets sharing a ``classes_per_task``-output head, trained sequentially. Returns the same
     {R, acc, bwt, learn_acc, final_per_task} as run_permuted_mnist.
@@ -193,13 +228,14 @@ def run_class_il(method: str, config: dict | None = None, dataset: str = "fashio
     if method == "pc":
         model = PCN(sizes, activation=cfg["activation"], weight_init=cfg["weight_init"],
                     device=device, seed=int(cfg["seed"]))
-    elif method == "bp":
+    elif method in ("bp", "ewc"):
         model = BPMLPRef(sizes, activation=cfg["activation"], weight_init=cfg["weight_init"],
                          device=device, dtype=dtype, seed=int(cfg["seed"])).to(device)
         opt = torch.optim.SGD(model.parameters(), lr=float(cfg["lr_weight"]))
         loss_fn = bp_loss_fn(cfg["bp_loss"], num_classes=K)
+        ewc_tasks = []   # (star_params, fisher_diag) per consolidated task — EWC baseline only
     else:
-        raise ValueError(f"method must be 'pc' or 'bp', got {method!r}")
+        raise ValueError(f"method must be 'pc', 'bp' or 'ewc', got {method!r}")
 
     R = [[0.0] * n_tasks for _ in range(n_tasks)]
     for t in range(n_tasks):
@@ -214,15 +250,24 @@ def run_class_il(method: str, config: dict | None = None, dataset: str = "fashio
                     x = x.reshape(x.size(0), -1).to(device, dtype)
                     y = y.to(device)
                     opt.zero_grad()
-                    loss_fn(model(x), y).backward()
+                    loss = loss_fn(model(x), y)
+                    if method == "ewc":   # quadratic anchor to earlier tasks' important weights
+                        pen = _ewc_penalty(model, ewc_tasks, ewc_lambda)
+                        if pen is not None:
+                            loss = loss + pen
+                    loss.backward()
                     opt.step()
+        if method == "ewc":   # consolidate task t: snapshot optimal params + diagonal Fisher
+            star = [p.detach().clone() for p in model.parameters()]
+            ewc_tasks.append((star, _ewc_fisher(model, train_loader, loss_fn, device, dtype)))
         for j in range(n_tasks):
             test_loader = loaders[j][1]
             R[t][j] = (evaluate(model, test_loader, cfg["T"], cfg["lr_state"])
                        if method == "pc" else _eval_bp(model, test_loader, device, dtype))
 
     return {"R": R, "method": method, "dataset": dataset, "n_tasks": n_tasks,
-            "classes_per_task": K, "epochs_per_task": epochs_per_task, **gem_metrics(R)}
+            "classes_per_task": K, "epochs_per_task": epochs_per_task,
+            "ewc_lambda": ewc_lambda if method == "ewc" else None, **gem_metrics(R)}
 
 
 def run_alternating(method: str, config: dict | None = None, dataset: str = "fashion",

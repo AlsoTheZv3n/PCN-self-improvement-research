@@ -70,6 +70,40 @@ def test_training_loop_reduces_output_error():
     assert err_after < 0.5 * err_before
 
 
+def test_ipc_step_state_matches_settle_when_no_weight_update():
+    """Correctness anchor for incremental PC: with lr_weight=0 (weights frozen), one `_ipc_step`
+    must reproduce one standard settling step exactly — i.e. iPC's state update IS the SO update,
+    it only additionally moves the weights (Salvatori et al. 2024)."""
+    from pcn.learning import _ipc_step
+    model, x, y = _toy()
+    states = feedforward_init(model, x)
+    states[-1] = y
+    ipc_states = _ipc_step(model, [s.clone() for s in states], lr_state=0.1, lr_weight=0.0)
+    settle_states, _, _ = settle(model, [s.clone() for s in states], clamp_output=True, T=1,
+                                 lr_state=0.1)
+    for a, b in zip(ipc_states, settle_states):
+        assert torch.allclose(a, b, atol=1e-6)
+
+
+def test_ipc_training_reduces_output_error():
+    """Incremental PC (weights updated EVERY inference step, not only at equilibrium) also drives
+    down the output-free prediction error — the `update_variant='ipc'` path."""
+    from pcn.learning import train_epoch_ipc
+    model, x, y = _toy()
+    labels = y.argmax(dim=1)
+
+    def output_err() -> float:
+        s = feedforward_init(model, x)
+        s, _, _ = settle(model, s, clamp_output=False, T=50, lr_state=0.1)
+        return float(((s[-1] - y) ** 2).mean())
+
+    err_before = output_err()
+    for _ in range(40):
+        train_epoch_ipc(model, [(x, labels)], T=20, lr_state=0.1, lr_weight=0.01, num_classes=3)
+    err_after = output_err()
+    assert err_after < 0.5 * err_before
+
+
 def test_settling_gradient_matches_autograd():
     """The hand-derived state gradient in _settle_pytorch
         grad_sk = eps[k] - phi'(s_k) * (eps[k+1] @ W[k])   (eps[n] for the output layer)

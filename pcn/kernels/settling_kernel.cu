@@ -202,7 +202,110 @@ std::vector<torch::Tensor> pcn_settle_so_tiled(
     return {s1o, s2o, s3o};
 }
 
+// ----- general depth: one block per sample, ARBITRARY number of layers L --------------------
+// The v1/v2 kernels above hardcode L=3 (2 hidden layers) for speed. This variant takes the
+// weights/states/biases as arrays of device pointers (passed as int64 addresses) plus per-layer
+// sizes and shared-memory offsets, so it settles a PCN of any depth. Same Jacobi update as
+// _settle_pytorch; per-sample only (the small-batch / launch-overhead regime the kernel targets).
+__global__ void settle_kernel_deep(
+    const int64_t* __restrict__ S_in,   // [L+1] addresses of [B,n_l] input state buffers
+    const int64_t* __restrict__ S_out,  // [L+1] addresses of [B,n_l] output buffers (1..L written)
+    const int64_t* __restrict__ Wp,     // [L]   addresses of W[i] = [n_{i+1}, n_i]
+    const int64_t* __restrict__ Bp,     // [L]   addresses of b[i] = [n_{i+1}]
+    const int* __restrict__ n,       // [L+1] layer sizes
+    const int* __restrict__ off_s,   // [L+1] shared offsets for states
+    const int* __restrict__ off_e,   // [L+1] shared offsets for errors (1..L used)
+    const int* __restrict__ off_p,   // [L]   shared offsets for phi (0..L-1 used)
+    int L, int B, int T, float lr, int clamp_output, int act)
+{
+    int sample = blockIdx.x;
+    if(sample >= B) return;
+    int tid = threadIdx.x, nt = blockDim.x;
+    extern __shared__ float sh[];
+    for(int l=0; l<=L; l++){
+        const float* src = (const float*)S_in[l];
+        for(int i=tid; i<n[l]; i+=nt) sh[off_s[l]+i] = src[(size_t)sample*n[l]+i];
+    }
+    __syncthreads();
+    int last_free = clamp_output ? L-1 : L;
+    for(int t=0; t<T; t++){
+        for(int l=0; l<L; l++)                              // phi(s_l) for the predictions
+            for(int i=tid; i<n[l]; i+=nt) sh[off_p[l]+i] = actf(sh[off_s[l]+i], act);
+        __syncthreads();
+        for(int l=0; l<L; l++){                             // eps_{l+1} = s_{l+1} - (W_l phi(s_l) + b_l)
+            const float* Wl=(const float*)Wp[l]; const float* Bl=(const float*)Bp[l];
+            int no=n[l+1], ni=n[l];
+            for(int j=tid; j<no; j+=nt){
+                float a=Bl[j]; const float* w=Wl+(size_t)j*ni;
+                for(int i=0;i<ni;i++) a += w[i]*sh[off_p[l]+i];
+                sh[off_e[l+1]+j] = sh[off_s[l+1]+j] - a;
+            }
+        }
+        __syncthreads();
+        for(int k=1; k<=last_free; k++){                    // free-state Jacobi update
+            int nk=n[k];
+            for(int i=tid; i<nk; i+=nt){
+                float grad = sh[off_e[k]+i];
+                if(k<L){
+                    const float* Wk=(const float*)Wp[k]; int no=n[k+1];
+                    float fb=0.0f;
+                    for(int j=0;j<no;j++) fb += sh[off_e[k+1]+j]*Wk[(size_t)j*nk+i];
+                    grad -= actd(sh[off_s[k]+i],act)*fb;
+                }
+                sh[off_s[k]+i] -= lr*grad;
+            }
+        }
+        __syncthreads();
+    }
+    for(int l=1; l<=L; l++){                                // write back free/clamped states 1..L
+        float* dst=(float*)S_out[l];
+        for(int i=tid; i<n[l]; i+=nt) dst[(size_t)sample*n[l]+i] = sh[off_s[l]+i];
+    }
+}
+
+std::vector<torch::Tensor> pcn_settle_so_deep(
+    std::vector<torch::Tensor> S, std::vector<torch::Tensor> W, std::vector<torch::Tensor> Bb,
+    int64_t T, double lr, int64_t clamp_output, int64_t act)
+{
+    int L = (int)W.size();                                  // L weights, L+1 states
+    int B = S[0].size(0);
+    std::vector<torch::Tensor> outs;                        // outputs for states 1..L
+    std::vector<int64_t> s_in(L+1), s_out(L+1), wp(L), bp(L);
+    std::vector<int> n(L+1), off_s(L+1), off_e(L+1), off_p(L);
+    int cur=0, threads=64;
+    for(int l=0; l<=L; l++){ n[l]=S[l].size(1); off_s[l]=cur; cur+=n[l]; }
+    for(int l=1; l<=L; l++){ off_e[l]=cur; cur+=n[l]; if(n[l]>threads) threads=n[l]; }
+    for(int l=0; l<L;  l++){ off_p[l]=cur; cur+=n[l]; }
+    if(threads>256) threads=256;
+    outs.push_back(torch::Tensor());                        // index 0 unused (s0 untouched)
+    for(int l=1; l<=L; l++) outs.push_back(torch::empty_like(S[l]));
+    for(int l=0; l<=L; l++){ s_in[l]=(int64_t)S[l].data_ptr<float>(); }
+    s_out[0]=0; for(int l=1; l<=L; l++){ s_out[l]=(int64_t)outs[l].data_ptr<float>(); }
+    for(int l=0; l<L; l++){ wp[l]=(int64_t)W[l].data_ptr<float>(); bp[l]=(int64_t)Bb[l].data_ptr<float>(); }
+    auto i64=torch::TensorOptions().dtype(torch::kInt64), i32=torch::TensorOptions().dtype(torch::kInt32);
+    auto dev=S[0].device();
+    auto S_in_d =torch::from_blob(s_in.data(), {L+1}, i64).to(dev);
+    auto S_out_d=torch::from_blob(s_out.data(),{L+1}, i64).to(dev);
+    auto Wp_d  = torch::from_blob(wp.data(),  {L},   i64).to(dev);
+    auto Bp_d  = torch::from_blob(bp.data(),  {L},   i64).to(dev);
+    auto n_d   = torch::from_blob(n.data(),     {L+1}, i32).to(dev);
+    auto os_d  = torch::from_blob(off_s.data(), {L+1}, i32).to(dev);
+    auto oe_d  = torch::from_blob(off_e.data(), {L+1}, i32).to(dev);
+    auto op_d  = torch::from_blob(off_p.data(), {L},   i32).to(dev);
+    size_t shmem=(size_t)cur*sizeof(float);
+    cudaFuncSetAttribute(settle_kernel_deep, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shmem);
+    settle_kernel_deep<<<B, threads, shmem>>>(
+        S_in_d.data_ptr<int64_t>(), S_out_d.data_ptr<int64_t>(),
+        Wp_d.data_ptr<int64_t>(), Bp_d.data_ptr<int64_t>(),
+        n_d.data_ptr<int>(), os_d.data_ptr<int>(), oe_d.data_ptr<int>(), op_d.data_ptr<int>(),
+        L, B, (int)T, (float)lr, (int)clamp_output, (int)act);
+    std::vector<torch::Tensor> ret;                         // return states 1..L (caller prepends s0)
+    for(int l=1; l<=L; l++) ret.push_back(outs[l]);
+    return ret;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("pcn_settle_so", &pcn_settle_so, "fused SO settling, one block per sample (v1)");
     m.def("pcn_settle_so_tiled", &pcn_settle_so_tiled, "fused SO settling, tiled over TB samples (v2)");
+    m.def("pcn_settle_so_deep", &pcn_settle_so_deep, "fused SO settling, arbitrary depth (per-sample)");
 }

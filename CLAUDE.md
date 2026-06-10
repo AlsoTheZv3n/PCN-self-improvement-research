@@ -20,7 +20,7 @@ demonstrieren* — nicht "noch ein Finetune". Begleitendes Paper im NeurIPS-Stil
 |-------|--------|--------|
 | 1 | PyTorch-SO-PCN, Settling-Loop, `train_and_eval` | **fertig + validiert** (M0–M1; Autograd-Gradient-Checks) |
 | 2 | Demos: Klassifikation, generativ, Occlusion, Anomalie, MLP-Baseline | **generativ funktioniert** (M5-v2, `docs/12` §4f): Ziffern-Prototypen + Anomalie-AUC 1,0 (`pcn/generative.py`); Notebooks offen |
-| 3 | **CUDA-Settling-Kernel (OPTIONAL)** + Benchmark | **gebaut v1+v2+v3** (`pcn/kernels/`), correctness-verifiziert (tanh/identity/**sigmoid**, ~1e-6): 3,2× @ B=64, ~2,0× @ B=256, break-even @ B=1024; B≥2048 → cuBLAS. **In §4g-Studie integriert** (`backend="cuda"`, 1,45× end-to-end, Per-Seed identisch); M6, `docs/12` §4d/§4g |
+| 3 | **CUDA-Settling-Kernel (OPTIONAL)** + Benchmark | **gebaut v1+v2+v3** (`pcn/kernels/`), correctness-verifiziert (tanh/identity/**sigmoid**, ~1e-6): 3,2× @ B=64, ~2,0× @ B=256, break-even @ B=1024; B≥2048 → cuBLAS. **In §4g-Studie integriert** (`backend="cuda"`, 1,45× end-to-end, Per-Seed identisch); **beliebige Tiefe** (Deep-Kernel, validiert Tiefen 2–5, §4h); M6, `docs/12` §4d/§4g/§4h |
 | 4 | Autonomer Such-Loop über `train_and_eval` | **umgesetzt** (M7): `pcn/search.py` grid/random (+Optuna optional); Phase-4-Lauf rediscovert η_x↔η_w |
 | — | PC-vs-BP-Studie (Hook B) | **fertig** (M4): PC ≈ BP, 3 Confounds entlarvt — `docs/12` §4c, `docs/10` §9. **Song-treue alternierende Replikation** (`docs/12` §4g, n=5): keine ≥1σ-Differenz auf irgendeinem Budget; PC früh langsamer, bei Konvergenz marginal vorn (im Rauschen) |
 | — | Paper (NeurIPS-Stil, EN) | **Draft fertig** (M7): `docs/05` synthetisiert A+B+C + Limitations + korrigierte Refs |
@@ -69,7 +69,7 @@ identisch). Design: `docs/07`/`docs/09`; Befund `docs/12` §4d/§4g. **Ohne** Ke
 
 - `model.py` — `PCN`: Gewichte/Bias/Aktivierung, `predict(i, state)`
 - `settling.py` — `feedforward_init`, `settle(...)` (Backend-Dispatch) + PyTorch-Impl
-- `learning.py` — `weight_update` (lokal, Hebb), `train_epoch`
+- `learning.py` — `weight_update` (lokal, Hebb), `train_epoch`; **`train_epoch_ipc`** (incremental PC, §4h — Weight-Update jeden Settling-Schritt, braucht ~lr/T)
 - `evaluate.py` — `evaluate`, `noise_robustness`
 - `api.py` — **`train_and_eval(config) -> metrics`** (Phase-4-Schnittstelle, lädt MNIST; eta_x/eta_w-Aliase, val_split, bp_loss)
 - `baselines.py` — BP-MLP-Referenz (klont PCN-Init, gleiche Forward-Fn); `train_and_eval_bp`, `bp_loss_fn` (ce/mse)
@@ -77,7 +77,7 @@ identisch). Design: `docs/07`/`docs/09`; Befund `docs/12` §4d/§4g. **Ohne** Ke
 - `generate.py` — Hook C diskriminativ: `generate`/`inpaint`/`anomaly_scores` (liefert Rauschen — docs/12 §4e)
 - `generative.py` — **Hook C generativ** [10,h,h,784]: `train_generative`, `generate_*`, `inpaint_generative`, `anomaly_scores_generative` (funktioniert — §4f)
 - `search.py` — **Phase 4**: `grid_search`/`random_search`/`bayesian_search` (Optuna optional) über `train_and_eval`
-- `experiments/` — `protocol.py` (fair-comparison: bootstrap-CI, sweep_grid), `continual.py` (Permuted/Split-MNIST, GEM-Metriken)
+- `experiments/` — `protocol.py` (fair-comparison: bootstrap-CI, sweep_grid), `continual.py` (Permuted/Split-MNIST, GEM-Metriken; **EWC-Baseline** `method="ewc"`, §4h), `run_alternating` (Song-exakt, §4g)
 - `kernels/` — **gebaut v1+v2+v3** (`settling_cuda.py`): fused CUDA-Settling, hybrid Dispatch; bewusst per `PCN_CUDA_KERNEL=1`
 
 ## Befehle

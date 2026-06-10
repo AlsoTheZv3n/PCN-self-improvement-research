@@ -240,7 +240,8 @@ def cmd_classil(args):
 
     chosen = {"PC": ("pc", 0.05, 0.05, "ce"),
               "BP_MSE": ("bp", 0.1, bw_mse, "mse"),
-              "BP_CE": ("bp", 0.1, bw_ce, "ce")}
+              "BP_CE": ("bp", 0.1, bw_ce, "ce"),
+              "EWC": ("ewc", 0.1, bw_mse, "mse")}  # = BP(MSE) + Fisher anchor (isolates EWC effect)
     out = {}
     for name, (method, eta_x, eta_w, bp_loss) in chosen.items():
         rs = [run_arm(method, eta_x, eta_w, bp_loss, s) for s in seeds]

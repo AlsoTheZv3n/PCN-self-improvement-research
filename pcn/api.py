@@ -11,7 +11,7 @@ import warnings
 import torch
 
 from .evaluate import evaluate, noise_robustness
-from .learning import train_epoch
+from .learning import train_epoch, train_epoch_ipc
 from .model import PCN
 from .settling import feedforward_init, settle
 
@@ -64,10 +64,11 @@ def _resolve_config(config: dict | None) -> dict:
             f"precision_schedule={cfg['precision_schedule']!r} is reserved for M2 and not yet "
             "implemented — only 'isotropic' (Pi=I) works today. See docs/13 M2 and docs/01."
         )
-    if cfg["update_variant"] != "standard":
+    if cfg["update_variant"] not in ("standard", "ipc"):
         raise NotImplementedError(
-            f"update_variant={cfg['update_variant']!r} is reserved for M7 (iPC) and not yet "
-            "implemented — only 'standard' works today. See docs/13 M7 and docs/04."
+            f"update_variant={cfg['update_variant']!r} unknown — only 'standard' (settle then "
+            "update once) and 'ipc' (incremental PC: update weights every inference step, "
+            "Salvatori et al. 2024) are implemented. See docs/04."
         )
     return cfg
 
@@ -151,10 +152,15 @@ def train_and_eval(config: dict | None = None) -> dict:
     )
 
     energy_curve: list[float] = []
+    ipc = cfg["update_variant"] == "ipc"
     t0 = time.time()
     for _ in range(int(cfg["epochs"])):
-        info = train_epoch(model, train_loader, cfg["T"], cfg["lr_state"], cfg["lr_weight"],
-                           backend=cfg["backend"], tol=cfg["tol"], track_energy=True)
+        if ipc:   # incremental PC: weights move every inference step (PyTorch backend only)
+            info = train_epoch_ipc(model, train_loader, cfg["T"], cfg["lr_state"],
+                                   cfg["lr_weight"], track_energy=True)
+        else:
+            info = train_epoch(model, train_loader, cfg["T"], cfg["lr_state"], cfg["lr_weight"],
+                               backend=cfg["backend"], tol=cfg["tol"], track_energy=True)
         energy_curve.append(info["final_energy"])
     train_time = time.time() - t0
 

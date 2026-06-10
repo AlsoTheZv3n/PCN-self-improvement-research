@@ -35,7 +35,9 @@ def test_reserved_precision_schedule_raises():
         _resolve_config({"precision_schedule": "spiking"})
 
 
-def test_reserved_update_variant_raises():
-    # iPC is reserved for M7.
+def test_update_variant_ipc_accepted_unknown_raises():
+    # iPC is now implemented (Salvatori et al. 2024) -> accepted; an unknown variant still
+    # fails loudly rather than silently no-op'ing.
+    assert _resolve_config({"update_variant": "ipc"})["update_variant"] == "ipc"
     with pytest.raises(NotImplementedError):
-        _resolve_config({"update_variant": "ipc"})
+        _resolve_config({"update_variant": "bogus"})
