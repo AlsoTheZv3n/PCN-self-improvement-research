@@ -19,9 +19,8 @@ uv sync --extra dev && uv run pytest -q      # Settling-Korrektheit (offline, sy
   correctness-verifiziert ~1e-6, beliebige Tiefe; via `PCN_CUDA_KERNEL=1` / `backend="cuda"`)
 - `scripts/` — alle Experimente (faire PC-vs-BP-Studie, Song-Replikation, Kernel-Benchmark,
   Tiefen-Ablation, generativ, Suche) + `make_figures.py`
-- `docs/` — vollständige Projekt-Doku (`00_overview.md` Einstieg; exakter Algorithmus `09`,
-  Methodik `10`, Quellen `11`, alle Befunde `12`)
 - `thesis/` — die fertige **Masterarbeit als PDF** (`Weidenmann_Predictive-Coding-from-Scratch.pdf`)
+  — die vollständige Methodik, Herleitung und alle Befunde
 - `figures/` — die Paper-Figuren (PNG + PDF), reproduzierbar aus `results/*.json`
 - `CLAUDE.md` — Arbeitsanweisungen, Konventionen und Lese-Reihenfolge für Claude Code
 
@@ -53,4 +52,5 @@ Alle Experimente, Figuren und Tests sind aus dem Repo reproduzierbar (`results/*
 - PyTorch nur als Tensor-Engine — **kein** Autograd fürs PC-Lernen; alle Updates manuell.
 - Der CUDA-Kernel ist **optional** und Default-`backend` ist `"pytorch"`.
 
-Details und Hintergrund: **`CLAUDE.md`** und **`docs/00_overview.md`**.
+Methodik, Herleitung und vollständige Befunde stehen in der Masterarbeit
+(`thesis/Weidenmann_Predictive-Coding-from-Scratch.pdf`).

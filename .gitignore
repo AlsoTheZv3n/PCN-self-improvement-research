@@ -47,3 +47,7 @@ Thumbs.db
 # visitors see the finished PDF, not how it was built.
 thesis/*
 !thesis/Weidenmann_Predictive-Coding-from-Scratch.pdf
+
+# internal project docs (German working notes) kept local — the public repo shows code,
+# results, figures, the README summary, and the finished thesis PDF, not the working notes
+docs/
